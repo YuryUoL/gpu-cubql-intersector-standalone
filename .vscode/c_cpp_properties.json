@@ -1,0 +1,25 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "compileCommands": "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/compile_commands.json",
+            "compilerPath": "/usr/bin/gcc",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/local/cuda/include",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/include",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/glm",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/imgui/imgui",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/imgui/implot",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/imgui/ImGuizmo",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/glfw/include",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/glad/include",
+                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/**"
+            ],
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}
