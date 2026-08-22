@@ -1,24 +1,31 @@
 ## 🚀 High-Performance Build Instructions (Crucial for Evaluation)
 
-This module implements a hybrid GPU/CPU pipeline utilizing **cuBQL** for highly parallel bounding volume hierarchy (BVH) broad-phase pruning, and **CGAL (EPICK)** for exact geometric predicate resolution. 
+This application implements a high-performance hybrid GPU/CPU mesh intersection pipeline:
+* **GPU Broad-Phase Search:** Uses **cuBQL** for CUDA-accelerated Bounding Volume Hierarchy (BVH) construction and dual-tree spatial traversal.
+* **Exact CPU Filtering:** Leverages **CGAL** exact geometric predicates (`CGAL_Core`, GMP/MPFR, TBB) for exact triangle intersection resolution and curve extraction without numerical drift.
+* **Interactive Viewport:** Uses **Polyscope** for real-time 3D visualization, allowing dynamic translation and rotation of surface meshes while displaying live intersection curves.
 
-Because CGAL relies heavily on arithmetic interval filtering and template-heavy multi-precision arithmetic, compiling in **Debug mode will result in a 10x–30x performance degradation**. To evaluate the true speed of the pipeline ($\approx$680ms for 200k-face meshes), the project **must** be built with maximum optimizations and safety assertions disabled (`-O3 -DNDEBUG`).
+Because CGAL and cuBQL rely heavily on arithmetic interval filtering and template-heavy multi-precision operations, compiling in **Debug mode results in significant performance degradation**. To evaluate the true speed of the pipeline, the project **must** be built in `Release` mode. Compiler optimizations (`-O3 -march=native --use_fast_math -DNDEBUG`) are injected automatically by target helper functions in CMake.
 
 ### Prerequisites
-* CUDA Toolkit 12.x+
-* CGAL 5.x+ 
-* GMP & MPFR libraries
+* **CUDA Toolkit:** 12.x+ (default target architecture: `120` / Blackwell, configurable via `-DCMAKE_CUDA_ARCHITECTURES`)
+* **CGAL:** 5.x+ (`Core` component)
+* **System Dependencies:** TBB, GMP, MPFR, `readline` (`pkg-config`)
+* **cuBQL:** Shared libraries (`libcuBQL_cuda_float2.so`, `libcuBQL_cuda_float3.so`)
 
-### Boosted Compilation Sequence
+---
 
-To preserve workspace cleanliness, use CMake's explicit source (`-S`) and build (`-B`) target flags. This ensures all compiler optimizations, loop unrolling, and native vector lanes are fully utilized:
+### Compilation Sequence
+
+Use explicit source (`-S .`) and build (`-B build`) target flags to keep the directory clean. Custom dependency locations can be passed using `-D` flags if CGAL or cuBQL are not installed in standard system paths:
 
 ```bash
-# 1. Configure the project directly into the build directory with Release flags enabled
-cmake -S ./cgal-public-dev/GPU_Cubql_module \
-      -B ./cgal-build/GPU_Cubql_module \
+# 1. Configure the standalone build in Release mode
+cmake -S . -B build \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CXX_FLAGS="-O3 -march=native -DNDEBUG"
+      -DCGAL_DIR=/path/to/cgal-main \
+      -DCUBQL_ROOT=/path/to/Cubql \
+      -DCUBQL_BUILD=/path/to/Cubql/build
 
-# 2. Compile using all available CPU threads
-cmake --build ./cgal-build/GPU_Cubql_module -j$(nproc)
+# 2. Compile the primary interactive executable
+cmake --build build --target MainApp -j$(nproc)
