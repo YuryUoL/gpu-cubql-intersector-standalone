@@ -12,7 +12,7 @@
 
 <br><br>
 
-**Yury** · **CGAL** · **Google Summer of Code 2026**
+**Yury Elkin** · **CGAL** · **Google Summer of Code 2026**
 
 </div>
 
@@ -151,15 +151,15 @@ GPU Float Predicate
 
 ### 2.2 Partial Forest Pipeline (`standaloneCompute`)
 
-When intersecting regions are localized, building full BVHs from the root introduces unnecessary overhead. The `standaloneCompute` pipeline optimizes memory and execution time through dynamic partial-forest construction:
+When BVH is not used in other tasks its construction introduces unnecessary overhead. The `standaloneCompute` pipeline optimizes memory and execution time through dynamic partial-forest construction:
 
 ```text
       Full BVH                              Partial Forest
 
         Root
        /    \
-     ...    ...              ┌─────────┐   ┌─────────┐   ┌─────────┐
-    /        \                │ Subtree │   │ Subtree │   │ Subtree │
+     ...    ...                ┌─────────┐   ┌─────────┐   ┌─────────┐
+    /        \                 │ Subtree │   │ Subtree │   │ Subtree │
    N          N                │    A    │   │    B    │   │    C    │
   /|\        /|\               └─────────┘   └─────────┘   └─────────┘
 ```
