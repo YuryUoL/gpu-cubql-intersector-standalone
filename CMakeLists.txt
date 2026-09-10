@@ -1,157 +1,55 @@
-cmake_minimum_required(VERSION 3.18...3.31) 
-project(meshIntersectionRegistration LANGUAGES CXX CUDA)
+===============================================================================
+SYSTEM REQUIREMENTS & TESTED ENVIRONMENT
+===============================================================================
 
-# ====================================================================
-# GLOBAL OPTIONS & BUILD CONFIGURATION
-# ====================================================================
+1. SOFTWARE REQUIREMENTS
+-------------------------------------------------------------------------------
+* Operating System : Linux (Fedora / Ubuntu recommended)
+* CUDA Toolkit     : >= 13.0 (Required for C++17/20 host-device __int128 support
+                     and sm_120 architecture support; older versions will produce 
+                     compilation errors with __int128 types)
+* Host Compiler    : GCC >= 11.0 or Clang >= 13.0 (C++17 standard support required)
+* Build System     : CMake >= 3.22
+* GPU Compute      : Compute Capability 7.5+ (Ampere/Ada/Blackwell recommended)
 
-option(BUILD_ARCHIVED_TARGETS "Build archived legacy executables" OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Export compile commands for IDEs" FORCE)
+Libraries & Dependencies:
+* NVIDIA cuBQL     : Built-in / Submodule
+* CGAL             : >= 5.6 (EPECK Exact Predicates Inexact Constructions Kernel)
+* Intel TBB        : Required for parallel CPU fallback filtering
+* Polyscope        : Optional (Required for GUI interactive visualizer)
 
-# Global language standards
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Default to Blackwell (sm_120) if not specified via command line
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES "120")
-endif()
+2. HARDWARE REQUIREMENTS
+-------------------------------------------------------------------------------
+* GPU              : NVIDIA Dedicated GPU with CUDA support
+* Video Memory     : >= 4 GB VRAM (8+ GB recommended for large meshes like Thingi10K)
+* System RAM       : >= 16 GB RAM
+* Storage          : High-speed NVMe SSD recommended for fast mesh IO (.off / .obj)
 
-# ====================================================================
-# DEPENDENCIES & PACKAGE LOCATIONS
-# ====================================================================
 
-# Portable package search (allows override via -DCGAL_DIR=... or standard system path)
-find_package(CGAL REQUIRED COMPONENTS Core)
-find_package(CUDAToolkit REQUIRED)
-find_package(Threads REQUIRED)
-find_package(TBB REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(READLINE REQUIRED readline)
+3. TESTED SYSTEM SPECIFICATIONS (Reference Environment)
+-------------------------------------------------------------------------------
+The standalone engine and benchmarks were evaluated on the following setup:
 
-# Configurable cuBQL location (Overridable via -DCUBQL_ROOT=/path/to/cubql)
-set(CUBQL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external/cubql" CACHE PATH "Path to cuBQL source root")
-set(CUBQL_BUILD "${CUBQL_ROOT}/build" CACHE PATH "Path to cuBQL build folder")
+* OS               : Fedora Linux 42 (Workstation Edition) (x86_64)
+* Kernel           : Linux 6.19.14-108.fc42.x86_64
+* CPU              : AMD Ryzen 9 3950X (16 Cores / 32 Threads)
+* GPU              : NVIDIA GeForce RTX 5060 Ti
+* Compute Arch     : sm_120
+* VRAM             : 16 GB GDDR6 (16311 MiB)
+* System RAM       : 80 GB DDR4 (78 GiB)
+* NVIDIA Driver    : 580.159.03
+* CUDA Toolkit     : 13.0 (V13.0.88)
+* Host Compiler    : GCC 15.2.1
+* CMake            : 3.31.11
 
-# Link libraries
-set(SHARED_LINK_LIBS
-    CGAL::CGAL
-    CGAL::CGAL_Core
-    gmp
-    mpfr
-    Threads::Threads
-    TBB::tbb
-    "${CUBQL_BUILD}/libcuBQL_cuda_float2.so"
-    "${CUBQL_BUILD}/libcuBQL_cuda_float3.so"
-)
 
-# Fetch Polyscope dynamically
-include(FetchContent)
-FetchContent_Declare(
-    polyscope
-    GIT_REPOSITORY https://github.com/nmwsharp/polyscope.git
-    GIT_TAG        master
-)
-FetchContent_MakeAvailable(polyscope)
-
-# ====================================================================
-# HELPER FUNCTION
-# ====================================================================
-
-function(configure_geometry_target TARGET_NAME)
-    set_target_properties(${TARGET_NAME} PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "${CUBQL_BUILD}"
-    )
-
-    target_compile_definitions(${TARGET_NAME} PRIVATE CGAL_LINKED_WITH_TBB)
-
-    target_compile_options(${TARGET_NAME} PRIVATE 
-        $<$<COMPILE_LANGUAGE:CXX>:-O3 -march=native -DNDEBUG>
-        $<$<COMPILE_LANGUAGE:CUDA>:-O3 -DNDEBUG --use_fast_math>
-    )
-
-    # Includes local headers, internal cubql third-party headers, and external cuBQL
-    target_include_directories(${TARGET_NAME} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/third-party
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CUBQL_ROOT}
-        ${CUBQL_ROOT}/samples/common
-        ${CUDAToolkit_INCLUDE_DIRS}
-    )
-
-    target_link_libraries(${TARGET_NAME} PRIVATE 
-        CUDA::cudart 
-        ${SHARED_LINK_LIBS}
-    )
-endfunction()
-
-# ====================================================================
-# PRIMARY TARGET: MainApp
-# ====================================================================
-
-set_source_files_properties(
-    apps/mainApplication.cpp 
-    src/CPU/TestSuite.cpp 
-    PROPERTIES LANGUAGE CUDA
-)
-
-add_executable(MainApp 
-    apps/mainApplication.cpp 
-    src/CPU/MeshIntersectionCurves.cpp
-    src/CPU/TestSuite.cpp
-    src/GPUIntersector/KernelBVHController.cu
-    src/GPUIntersector/StandaloneBVHPipeline.cu
-    src/traversal/crossCheck.cu
-    src/traversal/rapidDescendKernel.cu
-    src/traversal/DualTreeStep.cu
-    src/traversal/prune_pipeline.cu
-    src/single_tree/SingleTreeBatchCommon.cu
-    src/single_tree/SingleTreeBatchIntersector.cu
-    src/common/utils.cu
-    src/Warmup/cuda_warmup.cu
-    src/GPU_exact_predicates/TwoSumDoublePredicate.cu
-    src/GPU_exact_predicates/InexactBigIntFilter.cu
-    src/GPU_exact_predicates/ExactBigIntPredicate.cu
-    src/GPU_exact_predicates/OriginShiftedFloatPredicate.cu
-    src/GPU_exact_predicates/DoublePredicate.cu
-)
-
-configure_geometry_target(MainApp)
-
-target_include_directories(MainApp PRIVATE ${READLINE_INCLUDE_DIRS})
-target_link_libraries(MainApp PRIVATE ${READLINE_LIBRARIES} polyscope)
-
-# ====================================================================
-# ARCHIVED / LEGACY TARGETS (OPTIONAL BUILD)
-# ====================================================================
-
-if(BUILD_ARCHIVED_TARGETS)
-    message(STATUS "Building archived/legacy targets enabled.")
-
-    add_executable(meshIntersectionRegistration apps/archive/main.cpp src/registration/kernels.cu)
-    configure_geometry_target(meshIntersectionRegistration)
-
-    add_executable(meshIntersectionBatch apps/archive/main_massive.cpp src/registration/kernels.cu)
-    configure_geometry_target(meshIntersectionBatch)
-
-    add_executable(meshIntersectionCustom apps/archive/mainV2.cpp src/GPU_exact_predicates/kernelsV2.cu src/GPU_exact_predicates/InexactBigIntFilter.cu)
-    configure_geometry_target(meshIntersectionCustom)
-
-    add_executable(meshVoxelizer apps/archive/mainVoxel.cpp src/voxelizer/kernelsVoxel.cu)
-    configure_geometry_target(meshVoxelizer)
-
-    add_executable(testBVH apps/archive/mainTestBVH.cpp src/archive/kernelsTestBVH.cu src/traversal/rapidDescendKernel.cu src/traversal/crossCheck.cu src/archive/volumeSanityCheck.cu src/archive/batchedCrossIntersection.cu src/archive/batchedCrossIntersectionBruteV2.cu src/traversal/DualTreeStep.cu src/traversal/prune_pipeline.cu src/GPU_exact_predicates/InexactBigIntFilter.cu)
-    configure_geometry_target(testBVH)
-
-    add_executable(dualTreeExecution apps/archive/mainDualTreeTestLauncher.cpp src/traversal/crossCheck.cu src/GPU_exact_predicates/InexactBigIntFilter.cu src/DualTreeTraversal/DualTreeLauncher.cu src/DualTreeTraversal/DualTreeMeshIntersection.cu)
-    configure_geometry_target(dualTreeExecution)
-
-    add_executable(testBVHV2 apps/archive/mainTestBVHV2.cpp src/archive/kernelsTestBVHAlternative.cu src/traversal/rapidDescendKernel.cu src/archive/batchedCrossIntersectionV2.cu src/archive/batchedCrossIntersectionV3.cu src/single_tree/SingleTreeBatchCommon.cu src/traversal/DualTreeStep.cu src/traversal/prune_pipeline.cu src/Warmup/cuda_warmup.cu src/GPU_exact_predicates/ExactBigIntPredicate.cu src/common/utils.cu)
-    configure_geometry_target(testBVHV2)
-endif()
+4. KNOWN COMPILATION & SETUP NOTES
+-------------------------------------------------------------------------------
+* __int128 Errors : Ensure CUDA 13.0+ is active in your PATH/NVCC environment.
+                     Older CUDA toolkits trigger host/device header mismatch 
+                     errors when parsing 128-bit integer definitions in C++17 mode.
+* CMake Selection  : Point CMAKE_CUDA_COMPILER explicitly if multiple CUDA 
+                     versions are installed:
+                     $ cmake -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc ..
+===============================================================================
