@@ -2,21 +2,23 @@
     "configurations": [
         {
             "name": "Linux",
-            "compileCommands": "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/compile_commands.json",
-            "compilerPath": "/usr/bin/gcc",
+            "compileCommands": "${workspaceFolder}/../build/compile_commands.json",
+            "compilerPath": "/usr/bin/g++",
             "includePath": [
                 "${workspaceFolder}/**",
+                "/usr/include",
+                "/usr/local/include",
                 "/usr/local/cuda/include",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/include",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/glm",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/imgui/imgui",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/imgui/implot",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/imgui/ImGuizmo",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/glfw/include",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/glad/include",
-                "/home/yury/Projects/CPPProj/GSOC/cgal-build/GPU_Cubql_module/_deps/polyscope-src/deps/**"
+                "${workspaceFolder}/../build/_deps/polyscope-src/include",
+                "${workspaceFolder}/../build/_deps/polyscope-src/deps/glm",
+                "${workspaceFolder}/../build/_deps/polyscope-src/deps/imgui/imgui",
+                "${workspaceFolder}/../build/_deps/polyscope-src/deps/imgui/implot",
+                "${workspaceFolder}/../build/_deps/polyscope-src/deps/imgui/ImGuizmo",
+                "${workspaceFolder}/../build/_deps/polyscope-src/deps/glfw/include",
+                "${workspaceFolder}/../build/_deps/polyscope-src/deps/glad/include",
+                "${workspaceFolder}/../build/_deps/polyscope-src/deps/**"
             ],
-            "cStandard": "c11",
+            "cStandard": "c17",
             "cppStandard": "c++17",
             "intelliSenseMode": "linux-gcc-x64"
         }

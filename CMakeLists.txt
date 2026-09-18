@@ -1,4 +1,10 @@
-cmake_minimum_required(VERSION 3.18...3.31) 
+cmake_minimum_required(VERSION 3.18...3.31)
+
+# Default CUDA Arch (must be declared BEFORE project() initializes the CUDA compiler)
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES "120")
+endif()
+
 project(meshIntersectionRegistration LANGUAGES CXX CUDA)
 
 # ====================================================================
@@ -14,16 +20,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Default to Blackwell (sm_120) if not specified via command line
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES "120")
-endif()
-
 # ====================================================================
 # DEPENDENCIES & PACKAGE LOCATIONS
 # ====================================================================
 
-# Portable package search (allows override via -DCGAL_DIR=... or standard system path)
+# Fetch external dependencies via FetchContent first
+include(FetchContent)
+FetchContent_Declare(
+    polyscope
+    GIT_REPOSITORY https://github.com/nmwsharp/polyscope.git
+    GIT_TAG        master
+)
+FetchContent_MakeAvailable(polyscope)
+
+# Portable package search
 find_package(CGAL REQUIRED COMPONENTS Core)
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
@@ -31,11 +41,11 @@ find_package(TBB REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(READLINE REQUIRED readline)
 
-# Configurable cuBQL location (Overridable via -DCUBQL_ROOT=/path/to/cubql)
+# Configurable cuBQL location
 set(CUBQL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external/cubql" CACHE PATH "Path to cuBQL source root")
 set(CUBQL_BUILD "${CUBQL_ROOT}/build" CACHE PATH "Path to cuBQL build folder")
 
-# Link libraries
+# Link libraries shared across geometry targets
 set(SHARED_LINK_LIBS
     CGAL::CGAL
     CGAL::CGAL_Core
@@ -46,15 +56,6 @@ set(SHARED_LINK_LIBS
     "${CUBQL_BUILD}/libcuBQL_cuda_float2.so"
     "${CUBQL_BUILD}/libcuBQL_cuda_float3.so"
 )
-
-# Fetch Polyscope dynamically
-include(FetchContent)
-FetchContent_Declare(
-    polyscope
-    GIT_REPOSITORY https://github.com/nmwsharp/polyscope.git
-    GIT_TAG        master
-)
-FetchContent_MakeAvailable(polyscope)
 
 # ====================================================================
 # HELPER FUNCTION
@@ -94,12 +95,6 @@ endfunction()
 # ====================================================================
 # PRIMARY TARGET: MainApp
 # ====================================================================
-
-set_source_files_properties(
-    apps/mainApplication.cpp 
-    src/CPU/TestSuite.cpp 
-    PROPERTIES LANGUAGE CUDA
-)
 
 add_executable(MainApp 
     apps/mainApplication.cpp 

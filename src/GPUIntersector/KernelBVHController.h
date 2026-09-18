@@ -1,27 +1,42 @@
 #pragma once
 
-// External / System Headers
-#include <vector>
-#include <thrust/device_vector.h>
-#include <tbb/concurrent_vector.h>
+// ============================================================================
+// KernelBVHController.h
+//
+// This header is intentionally free of CUDA/Thrust/cuBQL/TBB headers so that
+// it can be #included and compiled from plain CPU-side translation units
+// (i.e. with a normal host compiler, not nvcc). All CUDA-resident state
+// (device pointers, cuBQL BVH structs, Thrust vectors, the CUDA stream,
+// etc.) lives in a private, forward-declared `Impl` struct that is only
+// ever defined in KernelBVHController.cu. From the outside, this class is
+// just a handle (via std::unique_ptr<Impl>) - a classic Pimpl / opaque
+// pointer pattern.
+//
+// NOTE on <vector_types.h>: double3 / uint3 / int2 are plain-old-data
+// structs declared in the CUDA Toolkit's <vector_types.h>. That header has
+// no device code and no dependency on nvcc, Thrust, or cuBQL - it's safe
+// to include from a host-only compiler as long as the CUDA include path is
+// visible to the build. If you'd rather not depend on any CUDA header at
+// all from CPU-only translation units, swap these for your own POD
+// mirrors (e.g. a `struct Double3 { double x, y, z; };`) and convert at
+// the .cu boundary instead.
+// ============================================================================
 
-// Vendor / Library Headers
-#include <cuBQL/bvh.h>
-#include <cuBQL/builder/cuda.h>
-#include <loadOBJ.h>
+#include <memory>
+#include <vector_types.h>  // double3, uint3, int2 (POD only, no device code)
 
-// Custom Project Modules
-#include "CPU/CgalDefinitions.h"
-#include "common/ExecutionStats.h"
-
-// REMOVED: #include "../custom_pipeline/TriangleDouble.h"
+// CPU-side project types that appear by value / by reference in the public
+// API. These headers must stay CUDA/Thrust/cuBQL free themselves for this
+// header to remain safely includable from CPU-only code.
+#include "CPU/CgalDefinitions.h"   // Mesh, Point3
+#include "common/ExecutionStats.h"  // ExecutionStats
 
 class KernelBVHController {
 public:
     KernelBVHController();
     ~KernelBVHController();
 
-    // Prevent accidental copying
+    // Prevent accidental copying (the class owns GPU resources)
     KernelBVHController(const KernelBVHController&) = delete;
     KernelBVHController& operator=(const KernelBVHController&) = delete;
 
@@ -43,7 +58,7 @@ public:
     void runIntersectionPipeline(
         int batchMultiplier, int numberOfDualTreeSteps, int activateAsyncDownload,
         int2*& outFinalExactPairs,       // Fast raw pointer return
-    size_t& outFinalCount,  ExecutionStats& stats,int gpuDouble);
+        size_t& outFinalCount, ExecutionStats& stats, int gpuDouble);
 
     // 3. Deallocates all GPU resources safely
     void cleanup();
@@ -52,109 +67,27 @@ public:
     void reconstructGPU(ExecutionStats& stats);
 
     // Dynamic Dual Point Cloud Transformation
-    void setTransformBoth(double3 rotDegA, double3 transA, 
+    void setTransformBoth(double3 rotDegA, double3 transA,
                           double3 rotDegB, double3 transB,
                           float& timeGPU, float& timeCPU,
-                          float& timeTransformVerts, 
-                          float& timeAssembleTris, 
+                          float& timeTransformVerts,
+                          float& timeAssembleTris,
                           float& timeGenBoxes);
 
     // Legacy Translation Interfaces
     void setTranslation(double xB, double yB, double zB);
-   // void setTranslationCPUHostUpload(double xB, double yB, double zB);
+    // void setTranslationCPUHostUpload(double xB, double yB, double zB);
 
-    // Centroid Getters
-    Point3 getCenterA() const { return m_centerA; }
-    Point3 getCenterB() const { return m_centerB; }
+    // Centroid Getters (defined in the .cu - Impl is incomplete here)
+    Point3 getCenterA() const;
+    Point3 getCenterB() const;
 
-    bool isGPUAllocated() const { 
-    return (m_dVertsA != nullptr && m_dVertsB != nullptr); 
-}
+    bool isGPUAllocated() const;
 
 private:
-    // Configuration Parameters
-    int m_leafThreshold = 0;
-    int m_levelA = 0;
-    int m_levelB = 0;
-    int m_numTrianglesA = 0;
-    int m_numTrianglesB = 0;
-    int m_numVertsA = 0;
-    int m_numVertsB = 0;
-
-    // Pre-computed Mesh Centroids
-    Point3 m_centerA{0, 0, 0};
-    Point3 m_centerB{0, 0, 0};
-
-    // Active transformations relative to pristine baseline states
-    double3 m_rotA{0.0, 0.0, 0.0};
-    double3 m_transA{0.0, 0.0, 0.0};
-    double3 m_rotB{0.0, 0.0, 0.0};
-    double3 m_transB{0.0, 0.0, 0.0};
-
-    // Legacy shift markers
-    double shiftX = 0.0f;
-    double shiftY = 0.0f;
-    double shiftZ = 0.0f;
-
-    Mesh* m_meshAcpu = nullptr;
-    Mesh* m_meshBcpu = nullptr;
-
-    // CUDA Streams & Memory Resource
-    cudaStream_t m_stream = nullptr;
-    cuBQL::DeviceMemoryResource m_memResource;
-
-    // Core Geometry & Topology Persistent Device Buffers
-    cuBQL::Triangle* m_dMeshA = nullptr;
-    float2*          m_dMeshMetricsA = nullptr;
-    cuBQL::box3f*    m_dBoxesA = nullptr;
-
-    cuBQL::Triangle* m_dMeshB = nullptr;
-    float2*          m_dMeshMetricsB = nullptr;
-    cuBQL::box3f*    m_dBoxesB = nullptr;
-
-
-        // ADD: Cached host data needed for GPU reconstruction
-    const double3* m_hVertsA = nullptr;
-    const uint3*   m_hIndicesA = nullptr;
-    const double3* m_hVertsB = nullptr;
-    const uint3*   m_hIndicesB = nullptr;
-
-    // Persistent Raw GPU & CPU Buffers for Mesh A
-    double3*             m_dVertsA = nullptr;       // Active transformed vertices
-    double3*             m_dVertsAOrig = nullptr;   // Pristine baseline vertices
-    uint3*              m_dIndicesA = nullptr;     // Triangle vertex indices
-    float*              m_dVertErrorsA = nullptr;  // Precision error bounds
-    std::vector<Point3> m_origPointsA;             // Baseline CGAL host points
-
-    // Persistent Raw GPU & CPU Buffers for Mesh B
-    double3*              m_dVertsB = nullptr;       // Active transformed vertices
-    double3*              m_dVertsBOrig = nullptr;   // Pristine baseline vertices
-    uint3*              m_dIndicesB = nullptr;     // Triangle vertex indices
-    float*              m_dVertErrorsB = nullptr;  // Precision error bounds
-    std::vector<Point3> m_origPointsB;             // Baseline CGAL host points
-
-    // BVH Structures (cuBQL v2_2 format)
-    cuBQL::bvh3f m_bvhA;
-    cuBQL::bvh3f m_bvhB;
-
-    uint32_t m_hOutMarkedCountA_Full = 0;
-    uint32_t m_hOutMarkedCountB_Full = 0;
-    thrust::device_vector<uint32_t> m_dMarkedNodeIndicesA_Full;
-    thrust::device_vector<uint32_t> m_dMarkedNodeIndicesB_Full;
-
-    // Persistent Thrust Vectors
-    thrust::device_vector<uint32_t> m_dNodeDescendantCountsA;
-    thrust::device_vector<uint32_t> m_dNodeDescendantCountsB;
-
-    thrust::device_vector<uint32_t> m_dReverseMapB;
-    thrust::device_vector<uint32_t> m_dOutPairsA;
-    thrust::device_vector<uint32_t> m_dOutPairsB;
-
-    thrust::device_vector<uint32_t> m_dOutOffsetsA;
-    thrust::device_vector<uint32_t> m_dOutPrimsFlatA;
-    thrust::device_vector<uint32_t> m_dOutOffsetsB;
-    thrust::device_vector<uint32_t> m_dOutPrimsFlatB;
-
-
-
+    // Everything CUDA/Thrust/cuBQL/TBB-related (device pointers, streams,
+    // cuBQL BVH structs, Thrust device_vectors, cached host pointers, etc.)
+    // is defined only in KernelBVHController.cu.
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };

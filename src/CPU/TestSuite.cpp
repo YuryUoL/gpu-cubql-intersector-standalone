@@ -1,20 +1,18 @@
 #include "TestSuite.h"
 #include "CPU/RotationTools.h"
-
 #include "CPU/PolyscopeBridge.h"
-
 #include "GPUIntersector/StandaloneBVHPipeline.h"
+
+// Concrete definitions required only within the implementation
+#include "GPUIntersector/KernelBVHController.h"
+#include "ApplicationState.h"
 
 #include <CGAL/Polygon_mesh_processing/intersection.h>
 #include <iostream>
 #include <iomanip>
 #include <chrono>
 #include <cmath>
-
-
-
-// Assuming ApplicationState is accessible via include context in main.cpp or its header
-#include "ApplicationState.h"
+#include <random>
 
 TestSuite::TestSuite(ApplicationState& appState) : app_(appState) {}
 
@@ -78,7 +76,7 @@ std::vector<int2> TestSuite::runMainGPUPipeline(
     auto tStart = std::chrono::high_resolution_clock::now();
     app_.controller.runIntersectionPipeline(
         config.batchMultiplier, config.dualTreeSteps, 0, outPairs, outCount, 
-        app_.stats, config.enableGpuPrecision // Passed as integer mode
+        app_.stats, config.enableGpuPrecision
     );
     auto tEnd = std::chrono::high_resolution_clock::now();
     outTimeMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
@@ -176,7 +174,6 @@ void TestSuite::runSuite(const TestConfig& config) {
         return;
     }
 
-    // 1. Fetch active viewport base positions from Polyscope
     float3 baseRotA_f{0.0f, 0.0f, 0.0f}, baseTransA_f{0.0f, 0.0f, 0.0f};
     float3 baseRotB_f{0.0f, 0.0f, 0.0f}, baseTransB_f{0.0f, 0.0f, 0.0f};
 
@@ -208,11 +205,9 @@ void TestSuite::runSuite(const TestConfig& config) {
     std::uniform_real_distribution<double> transDist(-config.maxTranslation, config.maxTranslation);
 
     for (int i = 0; i < config.numSteps; ++i) {
-        // Mesh A remains centered at its base transform
         double3 rotA   = baseRotA;
         double3 transA = baseTransA;
 
-        // Apply random perturbations relative to Mesh B's current starting position
         double3 rotB = make_double3(
             baseRotB.x + rotDist(rng),
             baseRotB.y + rotDist(rng),

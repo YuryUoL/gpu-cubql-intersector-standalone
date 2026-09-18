@@ -5,22 +5,21 @@
 #include <set>
 #include <string>
 #include <cuda_runtime.h>
-#include <vector_types.h>
 
 #include "CPU/CgalDefinitions.h"
-#include "GPUIntersector/KernelBVHController.h"
 
-// Forward declaration of ApplicationState from main context
+// Forward declaration to decouple host headers
+class KernelBVHController;
 struct ApplicationState;
 
 struct TestConfig {
     int numSteps = 8;
-    double maxTranslation = 1.0;     // Maximum offset in scene units
-    double maxRotationDeg = 180.0;   // Rotation range [-180, 180] degrees
-    unsigned int seed = 1337;        // Random seed for reproducibility
+    double maxTranslation = 1.0;
+    double maxRotationDeg = 180.0;
+    unsigned int seed = 1337;
     bool testMainGpuPipeline = true;
     bool testStandalonePipeline = true;
-    int enableGpuPrecision = 1;      // Integer precision mode
+    int enableGpuPrecision = 1;
     int queryDescentLevel = 12;
     int referenceDescentLevel = 12;
     int batchMultiplier = 2147483647;
@@ -54,10 +53,8 @@ class TestSuite {
 public:
     explicit TestSuite(ApplicationState& appState);
 
-    // Runs full automated sweep across translation and rotation ranges
     void runSuite(const TestConfig& config);
 
-    // Evaluates a single iteration with explicit mesh transforms
     VerificationResult evaluateStep(
         int stepIdx,
         const double3& rotA, const double3& transA,
