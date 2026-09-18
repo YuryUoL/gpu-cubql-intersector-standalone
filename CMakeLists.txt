@@ -96,8 +96,11 @@ endfunction()
 # PRIMARY TARGET: MainApp
 # ====================================================================
 
-add_executable(MainApp 
+option(ENABLE_EXPERIMENTAL_CGAL_PARALLEL "Enable experimental parallel CGAL mesh intersector" OFF)
+
+set(MAIN_APP_SOURCES
     apps/mainApplication.cpp 
+    src/CPU/CgalParallelLauncher.cpp
     src/CPU/MeshIntersectionCurves.cpp
     src/CPU/TestSuite.cpp
     src/GPUIntersector/KernelBVHController.cu
@@ -116,6 +119,19 @@ add_executable(MainApp
     src/GPU_exact_predicates/OriginShiftedFloatPredicate.cu
     src/GPU_exact_predicates/DoublePredicate.cu
 )
+
+if(ENABLE_EXPERIMENTAL_CGAL_PARALLEL)
+    message(STATUS "Experimental CGAL Parallel Intersector Enabled")
+    add_compile_definitions(ENABLE_CGAL_PARALLEL)
+endif()
+
+add_executable(MainApp ${MAIN_APP_SOURCES})
+
+if(ENABLE_EXPERIMENTAL_CGAL_PARALLEL)
+    target_include_directories(MainApp PRIVATE 
+        ${CGAL_DIR}/Polygon_mesh_processing/benchmark/Polygon_mesh_processing/include
+    )
+endif()
 
 configure_geometry_target(MainApp)
 

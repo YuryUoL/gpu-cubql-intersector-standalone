@@ -46,6 +46,7 @@
 
 #include "CPU/TestSuite.h"
 #include "CPU/ApplicationState.h"
+#include "CPU/CgalParallelLauncher.h"
 
 // Hardware Warmup & Pipeline Entry Points
 #include "Warmup/cuda_warmup.h"
@@ -202,6 +203,57 @@ void cmdTestConfig(ApplicationState& app, std::istringstream& iss) {
   std::cout << "=======================================================\n\n";
 }
 
+void cmdComputeCGALParallel(ApplicationState& app, std::istringstream& iss) {
+    if (!app.isLoaded) {
+        std::cout << "Error: You must 'load' meshes before computing.\n";
+        return;
+    }
+
+    if (!isCGALParallelSupported()) {
+        std::cout << "\n[CGAL Parallel] Feature not supported in this build.\n";
+        std::cout << "Recompile with '-DENABLE_EXPERIMENTAL_CGAL_PARALLEL=ON'.\n\n";
+        return;
+    }
+
+    // 1. Get transformations from Polyscope UI (Same as cmdComputeCGALClassic)
+    float3 rotA, transA, rotB, transB;
+    if (!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB)) {
+        std::cout << "Error: Failed to fetch transform matrices from Polyscope.\n";
+        return;
+    }
+
+    // 2. Transform meshes into current viewport space
+    Mesh meshA_transformed, meshB_transformed;
+    Point3 centerA(app.normCenterA.x, app.normCenterA.y, app.normCenterA.z);
+    Point3 centerB(app.normCenterB.x, app.normCenterB.y, app.normCenterB.z);
+
+    transformCgalMesh(app.meshA, meshA_transformed, centerA, make_double3(rotA.x, rotA.y, rotA.z),
+                      make_double3(transA.x, transA.y, transA.z));
+    transformCgalMesh(app.meshB, meshB_transformed, centerB, make_double3(rotB.x, rotB.y, rotB.z),
+                      make_double3(transB.x, transB.y, transB.z));
+
+    std::cout << "\nRunning Experimental CGAL Parallel CPU Mesh Intersection...\n";
+
+    // 3. Execute solver
+    std::vector<std::pair<size_t, size_t>> intersectedTris;
+    double elapsedMs = computeCGALParallel(meshA_transformed, meshB_transformed, intersectedTris);
+
+    // 4. Highlight intersecting pairs in Polyscope UI
+    std::vector<int2> stdPairs;
+    stdPairs.reserve(intersectedTris.size());
+    for (const auto& pair : intersectedTris) {
+        stdPairs.push_back(make_int2(static_cast<int>(pair.first), static_cast<int>(pair.second)));
+    }
+
+    PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
+
+    std::cout << "=======================================================\n";
+    std::cout << "       EXPERIMENTAL CGAL PARALLEL INTERSECTION         \n";
+    std::cout << "=======================================================\n";
+    std::cout << "  Execution Time      : " << std::fixed << std::setprecision(2) << elapsedMs << " ms\n";
+    std::cout << "  Exact Intersections : " << intersectedTris.size() << " pairs\n";
+    std::cout << "=======================================================\n\n";
+}
 
 bool exportMeshToOff(const Mesh& mesh, const std::string& filepath) {
   std::ofstream outFile(filepath);
@@ -1049,6 +1101,13 @@ int main(int argc, char** argv) {
   ui.registerCommand("ComputeCGALClassic", "",
                      "Computes intersections using classical CPU CGAL PMP and highlights them.",
                      [&](std::istringstream& iss) { cmdComputeCGALClassic(app, iss); });
+
+  ui.registerCommand("ComputeCGALParallel", "",
+                   "Computes intersections using experimental parallel CGAL intersector.",
+                   [&](std::istringstream& iss) { cmdComputeCGALParallel(app, iss); });
+
+  ui.registerAlias("cgalparallel", "ComputeCGALParallel");
+  ui.registerAlias("cgalp", "ComputeCGALParallel");
 
   ui.registerCommand("testConfig",
                      "[steps] [trans] [rotDeg] [precision] [dualTreeSteps] [queryLvl] [refLvl] [batch] [seed]",
