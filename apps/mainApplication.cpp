@@ -52,9 +52,6 @@
 #include "Warmup/cuda_warmup.h"
 #include "GPUIntersector/StandaloneBVHPipeline.h"
 
-
-
-
 static TestConfig g_testConfig;
 
 /**
@@ -72,7 +69,8 @@ struct MeshStatsAccumulator
   size_t totalEdgesCount = 0;
   size_t validFaces = 0;
 
-  void merge(const MeshStatsAccumulator& rhs) {
+  void merge(const MeshStatsAccumulator &rhs)
+  {
     minArea = std::min(minArea, rhs.minArea);
     maxArea = std::max(maxArea, rhs.maxArea);
     totalArea += rhs.totalArea;
@@ -97,7 +95,8 @@ struct BoundingBox3D
   double max_y = -std::numeric_limits<double>::infinity();
   double max_z = -std::numeric_limits<double>::infinity();
 
-  void expandByPoint(double x, double y, double z) {
+  void expandByPoint(double x, double y, double z)
+  {
     min_x = std::min(min_x, x);
     max_x = std::max(max_x, x);
     min_y = std::min(min_y, y);
@@ -106,7 +105,8 @@ struct BoundingBox3D
     max_z = std::max(max_z, z);
   }
 
-  void expandByBox(const BoundingBox3D& o) {
+  void expandByBox(const BoundingBox3D &o)
+  {
     min_x = std::min(min_x, o.min_x);
     max_x = std::max(max_x, o.max_x);
     min_y = std::min(min_y, o.min_y);
@@ -115,7 +115,8 @@ struct BoundingBox3D
     max_z = std::max(max_z, o.max_z);
   }
 
-  double3 getCenter() const {
+  double3 getCenter() const
+  {
     return make_double3(0.5 * (min_x + max_x), 0.5 * (min_y + max_y), 0.5 * (min_z + max_z));
   }
 };
@@ -125,21 +126,25 @@ struct BoundingBox3D
  * @param mesh Input CGAL Surface_mesh.
  * @return BoundingBox3D Encapsulating boundary of all mesh vertices.
  */
-BoundingBox3D computeMeshAABBParallel(const Mesh& mesh) {
+BoundingBox3D computeMeshAABBParallel(const Mesh &mesh)
+{
   size_t numVerts = num_vertices(mesh);
   auto coords = mesh.points();
 
   return tbb::parallel_reduce(
       tbb::blocked_range<size_t>(0, numVerts), BoundingBox3D(),
-      [&](const tbb::blocked_range<size_t>& r, BoundingBox3D box) {
-        for(size_t i = r.begin(); i != r.end(); ++i) {
+      [&](const tbb::blocked_range<size_t> &r, BoundingBox3D box)
+      {
+        for (size_t i = r.begin(); i != r.end(); ++i)
+        {
           typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
-          const auto& p = coords[v];
+          const auto &p = coords[v];
           box.expandByPoint(p.x(), p.y(), p.z());
         }
         return box;
       },
-      [](BoundingBox3D a, const BoundingBox3D& b) {
+      [](BoundingBox3D a, const BoundingBox3D &b)
+      {
         a.expandByBox(b);
         return a;
       });
@@ -153,11 +158,13 @@ BoundingBox3D computeMeshAABBParallel(const Mesh& mesh) {
  * @param cz Center Z offset.
  * @param scaleFactor Normalization scale multiplier.
  */
-void normalizeMeshCoordinatesParallel(Mesh& mesh, double cx, double cy, double cz, double scaleFactor) {
+void normalizeMeshCoordinatesParallel(Mesh &mesh, double cx, double cy, double cz, double scaleFactor)
+{
   size_t numVerts = num_vertices(mesh);
   auto coords = mesh.points();
 
-  tbb::parallel_for(tbb::blocked_range<size_t>(0, numVerts), [&](const tbb::blocked_range<size_t>& r) {
+  tbb::parallel_for(tbb::blocked_range<size_t>(0, numVerts), [&](const tbb::blocked_range<size_t> &r)
+                    {
     for(size_t i = r.begin(); i != r.end(); ++i) {
       typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
       const auto& p = coords[v];
@@ -165,99 +172,225 @@ void normalizeMeshCoordinatesParallel(Mesh& mesh, double cx, double cy, double c
       double ny = (p.y() - cy) * scaleFactor;
       double nz = (p.z() - cz) * scaleFactor;
       coords[v] = Point3(nx, ny, nz);
-    }
-  });
+    } });
 }
 
-void cmdTestConfig(ApplicationState& app, std::istringstream& iss) {
-  int steps, prec, dualTreeSteps, queryLvl, refLvl, batch;
-  double trans, rot;
+/**
+ * @brief Computes a recommended maximum translation distance for randomized
+ *        benchmarking based on both mesh dimensions.
+ * @param meshA Primary input surface mesh.
+ * @param meshB Secondary input surface mesh.
+ * @param overlapRatio Fraction of joint extent to allow for translation (default = 0.25).
+ * @return Double scalar translation limit.
+ */
+double computeAutoTranslationBound(const Mesh &meshA, const Mesh &meshB, double overlapRatio = 0.25)
+{
+  BoundingBox3D boxA = computeMeshAABBParallel(meshA);
+  BoundingBox3D boxB = computeMeshAABBParallel(meshB);
+
+  double spanAx = boxA.max_x - boxA.min_x;
+  double spanAy = boxA.max_y - boxA.min_y;
+  double spanAz = boxA.max_z - boxA.min_z;
+  double maxExtentA = std::max({spanAx, spanAy, spanAz});
+
+  double spanBx = boxB.max_x - boxB.min_x;
+  double spanBy = boxB.max_y - boxB.min_y;
+  double spanBz = boxB.max_z - boxB.min_z;
+  double maxExtentB = std::max({spanBx, spanBy, spanBz});
+
+  // Use the smaller mesh's extent (or average) so Mesh B doesn't separate completely
+  double refExtent = std::min(maxExtentA, maxExtentB);
+
+  return refExtent * overlapRatio;
+}
+
+void cmdTestConfig(ApplicationState &app, std::istringstream &iss)
+{
+  int steps, prec, dualTreeSteps, queryLvl, refLvl;
+  std::string transStr, batchStr, csvPath;
+  double rot;
   unsigned int seed;
 
-  if(iss >> steps >> trans >> rot >> prec >> dualTreeSteps >> queryLvl >> refLvl >> batch >> seed) {
+  // Parse transStr as std::string to allow "auto" or numeric values
+  if (iss >> steps >> transStr >> rot >> prec >> dualTreeSteps >> queryLvl >> refLvl >> batchStr >> seed)
+  {
     g_testConfig.numSteps = steps;
-    g_testConfig.maxTranslation = trans;
+
+    // --- "AUTO" TRANSLATION CALCULATOR ---
+    std::string transLower = transStr;
+    std::transform(transLower.begin(), transLower.end(), transLower.begin(), ::tolower);
+
+    if (transLower.rfind("auto", 0) == 0) // Starts with "auto"
+    {
+      double overlapRatio = 0.25; // Default fallback ratio
+
+      // Check if user appended ratio via "auto:0.15" or "auto_0.15"
+      size_t delimPos = transLower.find_first_of("::_");
+      if (delimPos != std::string::npos)
+      {
+        try
+        {
+          overlapRatio = std::stod(transLower.substr(delimPos + 1));
+        }
+        catch (...)
+        {
+          std::cout << "[TestConfig] Warning: Failed to parse ratio from " << transStr << ". Using default 0.25.\n";
+        }
+      }
+      // Alternatively, check if ratio was passed as the next token in the stream
+      else if (iss.peek() != EOF && std::isdigit(iss.peek()))
+      {
+        iss >> overlapRatio;
+      }
+
+      if (app.isLoaded)
+      {
+        g_testConfig.maxTranslation = computeAutoTranslationBound(app.meshA, app.meshB, overlapRatio);
+        std::cout << "[TestConfig] Auto-computed maxTranslation (ratio=" << overlapRatio
+                  << "): " << g_testConfig.maxTranslation << "\n";
+      }
+      else
+      {
+        std::cout << "[TestConfig] Warning: No mesh loaded! Defaulting translation to 0.0 until mesh load.\n";
+        g_testConfig.maxTranslation = 0.0;
+      }
+    }
+    else
+    {
+      try
+      {
+        g_testConfig.maxTranslation = std::stod(transStr);
+      }
+      catch (...)
+      {
+        std::cout << "Warning: Invalid translation input. Keeping previous value.\n";
+      }
+    }
+
     g_testConfig.maxRotationDeg = rot;
     g_testConfig.enableGpuPrecision = prec;
     g_testConfig.dualTreeSteps = dualTreeSteps;
     g_testConfig.queryDescentLevel = queryLvl;
     g_testConfig.referenceDescentLevel = refLvl;
-    g_testConfig.batchMultiplier = batch;
+
+    // Parse batch multiplier
+    std::string batchLower = batchStr;
+    std::transform(batchLower.begin(), batchLower.end(), batchLower.begin(), ::tolower);
+
+    if (batchLower == "inf" || batchLower == "infinity")
+    {
+      g_testConfig.batchMultiplier = std::numeric_limits<int>::max();
+    }
+    else
+    {
+      try
+      {
+        g_testConfig.batchMultiplier = std::stoi(batchStr);
+      }
+      catch (...)
+      {
+        std::cout << "Warning: Invalid batch multiplier input.\n";
+      }
+    }
+
     g_testConfig.seed = seed;
+
+    if (iss >> csvPath)
+    {
+      g_testConfig.csvOutputPath = csvPath;
+    }
+
     std::cout << "TestConfig updated successfully.\n";
   }
 
+  // Print ALL current configuration parameters
   std::cout << "\n=======================================================\n";
   std::cout << "            CURRENT TEST SUITE CONFIGURATION           \n";
   std::cout << "=======================================================\n";
   std::cout << "  Steps (numSteps)           : " << g_testConfig.numSteps << "\n";
-  std::cout << "  Max Translation (maxTrans) : " << std::defaultfloat
-            << std::setprecision(std::numeric_limits<double>::max_digits10) << g_testConfig.maxTranslation << "\n";
+  std::cout << "  Max Translation (maxTrans) : " << g_testConfig.maxTranslation << "\n";
   std::cout << "  Max Rotation (maxRotDeg)   : " << g_testConfig.maxRotationDeg << "°\n";
   std::cout << "  GPU Precision Mode (prec)  : " << g_testConfig.enableGpuPrecision << "\n";
-  std::cout << "  Dual tree steps performed  : " << g_testConfig.dualTreeSteps << "\n";
+  std::cout << "  Dual Tree Steps            : " << g_testConfig.dualTreeSteps << "\n";
   std::cout << "  Query Descent Level        : " << g_testConfig.queryDescentLevel << "\n";
   std::cout << "  Reference Descent Level    : " << g_testConfig.referenceDescentLevel << "\n";
-  std::cout << "  Batch Multiplier           : " << g_testConfig.batchMultiplier << "\n";
-  std::cout << "  Random Seed                : " << g_testConfig.seed << "\n";
+
+  std::cout << "  Batch Multiplier           : ";
+  if (g_testConfig.batchMultiplier == std::numeric_limits<int>::max())
+  {
+    std::cout << "INF (" << std::numeric_limits<int>::max() << ")\n";
+  }
+  else
+  {
+    std::cout << g_testConfig.batchMultiplier << "\n";
+  }
+
+  std::cout << "  RNG Seed                   : " << g_testConfig.seed << "\n";
+  std::cout << "  CSV Output File Path       : " << (g_testConfig.csvOutputPath.empty() ? "[None]" : g_testConfig.csvOutputPath) << "\n";
   std::cout << "=======================================================\n\n";
 }
 
-void cmdComputeCGALParallel(ApplicationState& app, std::istringstream& iss) {
-    if (!app.isLoaded) {
-        std::cout << "Error: You must 'load' meshes before computing.\n";
-        return;
-    }
+void cmdComputeCGALParallel(ApplicationState &app, std::istringstream &iss)
+{
+  if (!app.isLoaded)
+  {
+    std::cout << "Error: You must 'load' meshes before computing.\n";
+    return;
+  }
 
-    if (!isCGALParallelSupported()) {
-        std::cout << "\n[CGAL Parallel] Feature not supported in this build.\n";
-        std::cout << "Recompile with '-DENABLE_EXPERIMENTAL_CGAL_PARALLEL=ON'.\n\n";
-        return;
-    }
+  if (!isCGALParallelSupported())
+  {
+    std::cout << "\n[CGAL Parallel] Feature not supported in this build.\n";
+    std::cout << "Recompile with '-DENABLE_EXPERIMENTAL_CGAL_PARALLEL=ON'.\n\n";
+    return;
+  }
 
-    // 1. Get transformations from Polyscope UI (Same as cmdComputeCGALClassic)
-    float3 rotA, transA, rotB, transB;
-    if (!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB)) {
-        std::cout << "Error: Failed to fetch transform matrices from Polyscope.\n";
-        return;
-    }
+  // 1. Get transformations from Polyscope UI (Same as cmdComputeCGALClassic)
+  float3 rotA, transA, rotB, transB;
+  if (!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB))
+  {
+    std::cout << "Error: Failed to fetch transform matrices from Polyscope.\n";
+    return;
+  }
 
-    // 2. Transform meshes into current viewport space
-    Mesh meshA_transformed, meshB_transformed;
-    Point3 centerA(app.normCenterA.x, app.normCenterA.y, app.normCenterA.z);
-    Point3 centerB(app.normCenterB.x, app.normCenterB.y, app.normCenterB.z);
+  // 2. Transform meshes into current viewport space
+  Mesh meshA_transformed, meshB_transformed;
+  Point3 centerA(app.normCenterA.x, app.normCenterA.y, app.normCenterA.z);
+  Point3 centerB(app.normCenterB.x, app.normCenterB.y, app.normCenterB.z);
 
-    transformCgalMesh(app.meshA, meshA_transformed, centerA, make_double3(rotA.x, rotA.y, rotA.z),
-                      make_double3(transA.x, transA.y, transA.z));
-    transformCgalMesh(app.meshB, meshB_transformed, centerB, make_double3(rotB.x, rotB.y, rotB.z),
-                      make_double3(transB.x, transB.y, transB.z));
+  transformCgalMesh(app.meshA, meshA_transformed, centerA, make_double3(rotA.x, rotA.y, rotA.z),
+                    make_double3(transA.x, transA.y, transA.z));
+  transformCgalMesh(app.meshB, meshB_transformed, centerB, make_double3(rotB.x, rotB.y, rotB.z),
+                    make_double3(transB.x, transB.y, transB.z));
 
-    std::cout << "\nRunning Experimental CGAL Parallel CPU Mesh Intersection...\n";
+  std::cout << "\nRunning Experimental CGAL Parallel CPU Mesh Intersection...\n";
 
-    // 3. Execute solver
-    std::vector<std::pair<size_t, size_t>> intersectedTris;
-    double elapsedMs = computeCGALParallel(meshA_transformed, meshB_transformed, intersectedTris);
+  // 3. Execute solver
+  std::vector<std::pair<size_t, size_t>> intersectedTris;
+  double elapsedMs = computeCGALParallel(meshA_transformed, meshB_transformed, intersectedTris);
 
-    // 4. Highlight intersecting pairs in Polyscope UI
-    std::vector<int2> stdPairs;
-    stdPairs.reserve(intersectedTris.size());
-    for (const auto& pair : intersectedTris) {
-        stdPairs.push_back(make_int2(static_cast<int>(pair.first), static_cast<int>(pair.second)));
-    }
+  // 4. Highlight intersecting pairs in Polyscope UI
+  std::vector<int2> stdPairs;
+  stdPairs.reserve(intersectedTris.size());
+  for (const auto &pair : intersectedTris)
+  {
+    stdPairs.push_back(make_int2(static_cast<int>(pair.first), static_cast<int>(pair.second)));
+  }
 
-    PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
+  PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
 
-    std::cout << "=======================================================\n";
-    std::cout << "       EXPERIMENTAL CGAL PARALLEL INTERSECTION         \n";
-    std::cout << "=======================================================\n";
-    std::cout << "  Execution Time      : " << std::fixed << std::setprecision(2) << elapsedMs << " ms\n";
-    std::cout << "  Exact Intersections : " << intersectedTris.size() << " pairs\n";
-    std::cout << "=======================================================\n\n";
+  std::cout << "=======================================================\n";
+  std::cout << "       EXPERIMENTAL CGAL PARALLEL INTERSECTION         \n";
+  std::cout << "=======================================================\n";
+  std::cout << "  Execution Time      : " << std::fixed << std::setprecision(2) << elapsedMs << " ms\n";
+  std::cout << "  Exact Intersections : " << intersectedTris.size() << " pairs\n";
+  std::cout << "=======================================================\n\n";
 }
 
-bool exportMeshToOff(const Mesh& mesh, const std::string& filepath) {
+bool exportMeshToOff(const Mesh &mesh, const std::string &filepath)
+{
   std::ofstream outFile(filepath);
-  if(!outFile.is_open())
+  if (!outFile.is_open())
     return false;
   outFile << std::setprecision(17);
   return static_cast<bool>(outFile << mesh);
@@ -266,44 +399,48 @@ bool exportMeshToOff(const Mesh& mesh, const std::string& filepath) {
 /**
  * @brief Extracts normalized CGAL mesh points into a contiguous host vector of CUDA double3 elements.
  */
-void extractVertexCoordinatesParallel(const Mesh& mesh, std::vector<double3>& outVerts) {
+void extractVertexCoordinatesParallel(const Mesh &mesh, std::vector<double3> &outVerts)
+{
   size_t numVerts = num_vertices(mesh);
   outVerts.resize(numVerts);
   auto coords = mesh.points();
 
-  tbb::parallel_for(tbb::blocked_range<size_t>(0, numVerts), [&](const tbb::blocked_range<size_t>& r) {
+  tbb::parallel_for(tbb::blocked_range<size_t>(0, numVerts), [&](const tbb::blocked_range<size_t> &r)
+                    {
     for(size_t i = r.begin(); i != r.end(); ++i) {
       typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
       const auto& p = coords[v];
       outVerts[i] = make_double3(p.x(), p.y(), p.z());
-    }
-  });
+    } });
 }
 
 /**
  * @brief Standard single-threaded stream parser for OFF mesh files using CGAL ifstream operator.
  */
-bool loadMeshOffSequential(const std::string& filepath,
-                           Mesh& mesh,
-                           std::vector<double3>& outVerts,
-                           std::vector<uint3>& outIndices) {
+bool loadMeshOffSequential(const std::string &filepath,
+                           Mesh &mesh,
+                           std::vector<double3> &outVerts,
+                           std::vector<uint3> &outIndices)
+{
   std::ifstream inFile(filepath);
-  if(!inFile.is_open() || !(inFile >> mesh))
+  if (!inFile.is_open() || !(inFile >> mesh))
     return false;
 
   size_t numVerts = num_vertices(mesh);
   outVerts.resize(numVerts);
   auto coords = mesh.points();
-  for(size_t i = 0; i < numVerts; ++i) {
+  for (size_t i = 0; i < numVerts; ++i)
+  {
     typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
-    const auto& p = coords[v];
+    const auto &p = coords[v];
     outVerts[i] = make_double3(p.x(), p.y(), p.z());
   }
 
   size_t numFaces = num_faces(mesh);
   outIndices.resize(numFaces);
   size_t fIdx = 0;
-  for(auto f : mesh.faces()) {
+  for (auto f : mesh.faces())
+  {
     auto h = mesh.halfedge(f);
     outIndices[fIdx++] = {static_cast<uint32_t>(mesh.source(h)), static_cast<uint32_t>(mesh.target(h)),
                           static_cast<uint32_t>(mesh.target(mesh.next(h)))};
@@ -311,14 +448,17 @@ bool loadMeshOffSequential(const std::string& filepath,
   return true;
 }
 
-
-std::string parseArgument(std::istringstream& iss) {
+std::string parseArgument(std::istringstream &iss)
+{
   std::string arg;
   iss >> std::ws;
-  if(iss.peek() == '"' || iss.peek() == '\'') {
+  if (iss.peek() == '"' || iss.peek() == '\'')
+  {
     char quote = iss.get();
     std::getline(iss, arg, quote);
-  } else {
+  }
+  else
+  {
     iss >> arg;
   }
   return arg;
@@ -334,24 +474,28 @@ static bool g_readyForInput{true};
 /**
  * @brief Asynchronous CLI reader thread maintaining interactive terminal input via GNU Readline.
  */
-void inputThreadWorker() {
-  char* rawInput = nullptr;
-  while(g_running) {
+void inputThreadWorker()
+{
+  char *rawInput = nullptr;
+  while (g_running)
+  {
     {
       std::unique_lock<std::mutex> lock(g_cmdMutex);
-      g_cmdCV.wait(lock, [] { return g_readyForInput || !g_running; });
-      if(!g_running)
+      g_cmdCV.wait(lock, []
+                   { return g_readyForInput || !g_running; });
+      if (!g_running)
         break;
     }
 
     rawInput = readline("> ");
-    if(!rawInput) {
+    if (!rawInput)
+    {
       g_running = false;
       break;
     }
 
     std::string line(rawInput);
-    if(!line.empty())
+    if (!line.empty())
       add_history(rawInput);
     free(rawInput);
 
@@ -364,7 +508,8 @@ void inputThreadWorker() {
     std::istringstream iss(line);
     std::string cmd;
     iss >> cmd;
-    if(cmd == "quit" || cmd == "exit") {
+    if (cmd == "quit" || cmd == "exit")
+    {
       g_running = false;
       break;
     }
@@ -401,7 +546,8 @@ void inputThreadWorker() {
  * @param app Global application state context.
  * @param scaleToUnit If true, scales maximum scene bounding box dimension to fit within [-1, 1].
  */
-void normalizeAndSynchronizeScene(ApplicationState& app, bool scaleToUnit) {
+void normalizeAndSynchronizeScene(ApplicationState &app, bool scaleToUnit)
+{
   BoundingBox3D boxA_orig = computeMeshAABBParallel(app.meshA);
   BoundingBox3D boxB_orig = computeMeshAABBParallel(app.meshB);
   app.origCenterA = boxA_orig.getCenter();
@@ -457,23 +603,27 @@ void normalizeAndSynchronizeScene(ApplicationState& app, bool scaleToUnit) {
  * @param mode Pipeline execution mode bitmask.
  * @param enableGpuDoublePrecision Enables exact GPU double-precision floating point predicates when 1.
  */
-void executeMeshIntersectionPipeline(ApplicationState& app,
+void executeMeshIntersectionPipeline(ApplicationState &app,
                                      int batchMultiplier = std::numeric_limits<int>::max(),
                                      int mode = 0,
                                      int enableGpuDoublePrecision = 1,
-                                     bool showCurves = false) {
-  if(!app.isLoaded) {
+                                     bool showCurves = false)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: You must 'load' meshes before computing.\n";
     return;
   }
 
-  if(!app.controller.isGPUAllocated()) {
+  if (!app.controller.isGPUAllocated())
+  {
     std::cout << "[runCompute] GPU memory is cleared/empty. Automatically reconstructing...\n";
     app.controller.reconstructGPU(app.stats);
   }
 
   float3 rotA, transA, rotB, transB;
-  if(!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB)) {
+  if (!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB))
+  {
     std::cout << "Error: Failed to fetch transform matrices from Polyscope.\n";
     return;
   }
@@ -484,7 +634,7 @@ void executeMeshIntersectionPipeline(ApplicationState& app,
                                   tGPU, tCPU, tTV, tAT, tGB);
 
   auto tStart = std::chrono::high_resolution_clock::now();
-  int2* outIntersectionPairs = nullptr;
+  int2 *outIntersectionPairs = nullptr;
   size_t outFinalCount = 0;
 
   app.controller.runIntersectionPipeline(batchMultiplier, mode, 0, outIntersectionPairs, outFinalCount, app.stats,
@@ -496,16 +646,20 @@ void executeMeshIntersectionPipeline(ApplicationState& app,
   double elapsedMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
 
   std::vector<int2> stdPairs;
-  if(outIntersectionPairs && outFinalCount > 0) {
+  if (outIntersectionPairs && outFinalCount > 0)
+  {
     stdPairs.assign(outIntersectionPairs, outIntersectionPairs + outFinalCount);
     PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
-  } else {
+  }
+  else
+  {
     PolyscopeBridge::highlightIntersections({}, num_faces(app.meshA), num_faces(app.meshB));
   }
 
   // Handle curve generation via PolyscopeBridge abstraction
   double curveMs = 0.0;
-  if (showCurves) {
+  if (showCurves)
+  {
     auto tCurveStart = std::chrono::high_resolution_clock::now();
 
     Point3 centerA(app.normCenterA.x, app.normCenterA.y, app.normCenterA.z);
@@ -516,21 +670,21 @@ void executeMeshIntersectionPipeline(ApplicationState& app,
         centerA, make_double3(rotA.x, rotA.y, rotA.z), make_double3(transA.x, transA.y, transA.z),
         centerB, make_double3(rotB.x, rotB.y, rotB.z), make_double3(transB.x, transB.y, transB.z));
 
-    
-
     auto tCurveEnd = std::chrono::high_resolution_clock::now();
 
     PolyscopeBridge::showIntersectionCurves(segments);
 
     curveMs = std::chrono::duration<double, std::milli>(tCurveEnd - tCurveStart).count();
-    
-  } else {
+  }
+  else
+  {
     PolyscopeBridge::clearIntersectionCurves();
   }
 
   std::cout << "\n[Compute] Query completed in: " << std::fixed << std::setprecision(2) << elapsedMs << " ms. "
             << "Found " << outFinalCount << " intersections.\n";
-  if (showCurves) {
+  if (showCurves)
+  {
     std::cout << "[Curves] Extracted exact curves in: " << std::fixed << std::setprecision(2) << curveMs << " ms.\n";
   }
   std::cout << "AABB Hits: " << app.stats.finalAabbCandidatePairs
@@ -543,13 +697,16 @@ void executeMeshIntersectionPipeline(ApplicationState& app,
   std::cout << "Time setup GPU: " << tGPU << " ms | Time setup CPU: " << tCPU << " ms" << std::endl;
   std::cout << "RotateTransformVerts: " << tTV << " timeAssembleTris: " << tAT << " timeGenBoxes: " << tGB << std::endl;
 
-  if(outIntersectionPairs) {
+  if (outIntersectionPairs)
+  {
     std::free(outIntersectionPairs);
   }
 }
 
-void cmdScale(ApplicationState& app, std::istringstream&) {
-  if(!app.isLoaded) {
+void cmdScale(ApplicationState &app, std::istringstream &)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: No meshes loaded. Run 'load' first.\n";
     return;
   }
@@ -574,23 +731,29 @@ void cmdScale(ApplicationState& app, std::istringstream&) {
   std::cout << "=======================================================\n\n";
 }
 
-void cmdTbb(ApplicationState& app, std::istringstream& iss) {
+void cmdTbb(ApplicationState &app, std::istringstream &iss)
+{
   int numThreads = 0;
-  if(iss >> numThreads && numThreads > 0) {
+  if (iss >> numThreads && numThreads > 0)
+  {
     app.tbbControl = std::make_unique<tbb::global_control>(tbb::global_control::max_allowed_parallelism, numThreads);
     std::cout << "TBB maximum worker limit updated to: " << numThreads << "\n";
-  } else {
+  }
+  else
+  {
     std::cout << "Usage: tbb <num_threads> (must be > 0)\n";
   }
 }
 
-void cmdLoad(ApplicationState& app, std::istringstream& iss, bool useSequentialLoader) {
+void cmdLoad(ApplicationState &app, std::istringstream &iss, bool useSequentialLoader)
+{
   std::string arg1 = parseArgument(iss);
   std::string arg2 = parseArgument(iss);
 
   int queryDescentLevel = 1, referenceDescentLevel = 1, leafThresh = 4, scaleToUnitInt = 0;
 
-  if(arg1.empty()) {
+  if (arg1.empty())
+  {
     std::cout << "Usage: load" << (useSequentialLoader ? "Old" : "")
               << " <meshA> [meshB] [queryDescentLevel] [referenceDescentLevel] [leafThresh] [scaleToUnit(0/1)]\n";
     return;
@@ -599,22 +762,29 @@ void cmdLoad(ApplicationState& app, std::istringstream& iss, bool useSequentialL
   std::string pathA, pathB;
   bool singleMeshMode = false;
 
-  if(arg2.empty()) {
+  if (arg2.empty())
+  {
     singleMeshMode = true;
-  } else {
+  }
+  else
+  {
     std::istringstream checkNum(arg2);
     int val;
-    if(checkNum >> val) {
+    if (checkNum >> val)
+    {
       singleMeshMode = true;
       queryDescentLevel = val;
     }
   }
 
-  if(singleMeshMode) {
+  if (singleMeshMode)
+  {
     pathA = arg1;
     pathB = arg1;
     iss >> referenceDescentLevel >> leafThresh >> scaleToUnitInt;
-  } else {
+  }
+  else
+  {
     pathA = arg1;
     pathB = arg2;
     iss >> queryDescentLevel >> referenceDescentLevel >> leafThresh >> scaleToUnitInt;
@@ -637,48 +807,69 @@ void cmdLoad(ApplicationState& app, std::istringstream& iss, bool useSequentialL
   auto tIoStart = std::chrono::high_resolution_clock::now();
   bool loadedSuccessfully = false;
 
-  if(useSequentialLoader) {
-    if(singleMeshMode) {
-      if(loadMeshOffSequential(pathA, app.meshA, app.hVertsA, app.hIndicesA)) {
+  if (useSequentialLoader)
+  {
+    if (singleMeshMode)
+    {
+      if (loadMeshOffSequential(pathA, app.meshA, app.hVertsA, app.hIndicesA))
+      {
         app.meshB = app.meshA;
         app.hVertsB = app.hVertsA;
         app.hIndicesB = app.hIndicesA;
         loadedSuccessfully = true;
       }
-    } else {
-      if(loadMeshOffSequential(pathA, app.meshA, app.hVertsA, app.hIndicesA) &&
-         loadMeshOffSequential(pathB, app.meshB, app.hVertsB, app.hIndicesB))
+    }
+    else
+    {
+      if (loadMeshOffSequential(pathA, app.meshA, app.hVertsA, app.hIndicesA) &&
+          loadMeshOffSequential(pathB, app.meshB, app.hVertsB, app.hIndicesB))
       {
         loadedSuccessfully = true;
       }
     }
-  } else {
-    if(singleMeshMode) {
-      if(ParallelIO::loadOffToCgalMesh<Mesh, Point3>(pathA, app.meshA, app.hIndicesA)) {
+  }
+  else
+  {
+    if (singleMeshMode)
+    {
+      if (ParallelIO::loadOffToCgalMesh<Mesh, Point3>(pathA, app.meshA, app.hIndicesA))
+      {
         app.meshB = app.meshA;
         app.hIndicesB = app.hIndicesA;
         loadedSuccessfully = true;
-      } else {
+      }
+      else
+      {
         std::cerr << "Error: Could not open/read Mesh file: " << pathA << "\n";
       }
-    } else {
-      if(ParallelIO::loadOffToCgalMesh<Mesh, Point3>(pathA, app.meshA, app.hIndicesA) &&
-         ParallelIO::loadOffToCgalMesh<Mesh, Point3>(pathB, app.meshB, app.hIndicesB))
+    }
+    else
+    {
+      if (ParallelIO::loadOffToCgalMesh<Mesh, Point3>(pathA, app.meshA, app.hIndicesA) &&
+          ParallelIO::loadOffToCgalMesh<Mesh, Point3>(pathB, app.meshB, app.hIndicesB))
       {
         loadedSuccessfully = true;
-      } else {
+      }
+      else
+      {
         std::cerr << "Error: Failed to load OFF input files via fast parallel IO loader.\n";
       }
     }
   }
 
-  if(loadedSuccessfully) {
+  if (loadedSuccessfully)
+  {
     auto tIoEnd = std::chrono::high_resolution_clock::now();
     double ioMs = std::chrono::duration<double, std::milli>(tIoEnd - tIoStart).count();
 
     auto tPrepStart = std::chrono::high_resolution_clock::now();
 
     normalizeAndSynchronizeScene(app, scaleToUnit);
+
+    if (g_testConfig.maxTranslation <= 0.0)
+    {
+      g_testConfig.maxTranslation = computeAutoTranslationBound(app.meshA, app.meshB, 0.25);
+    }
 
     auto tPrepEnd = std::chrono::high_resolution_clock::now();
     double prepMs = std::chrono::duration<double, std::milli>(tPrepEnd - tPrepStart).count();
@@ -719,15 +910,17 @@ void cmdLoad(ApplicationState& app, std::istringstream& iss, bool useSequentialL
   }
 }
 
-void cmdTransform(ApplicationState& app, std::istringstream& iss) {
-  if(!app.isLoaded) {
+void cmdTransform(ApplicationState &app, std::istringstream &iss)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: You must 'load' meshes before transforming.\n";
     return;
   }
   double rotAx, rotAy, rotAz, transAx, transAy, transAz, rotBx, rotBy, rotBz, transBx, transBy, transBz;
 
-  if(iss >> rotAx >> rotAy >> rotAz >> transAx >> transAy >> transAz >> rotBx >> rotBy >> rotBz >> transBx >> transBy >>
-     transBz)
+  if (iss >> rotAx >> rotAy >> rotAz >> transAx >> transAy >> transAz >> rotBx >> rotBy >> rotBz >> transBx >> transBy >>
+      transBz)
   {
     float3 fRotA = make_float3(static_cast<float>(rotAx), static_cast<float>(rotAy), static_cast<float>(rotAz));
     float3 fTransA = make_float3(static_cast<float>(transAx), static_cast<float>(transAy), static_cast<float>(transAz));
@@ -741,15 +934,19 @@ void cmdTransform(ApplicationState& app, std::istringstream& iss) {
               << transAy << ", " << transAz << ")\n";
     std::cout << "  Mesh B Rot: (" << rotBx << ", " << rotBy << ", " << rotBz << ") | Trans: (" << transBx << ", "
               << transBy << ", " << transBz << ")\n";
-  } else {
+  }
+  else
+  {
     std::cout << "Usage: transform <rotAx> <rotAy> <rotAz> <transAx> <transAy> <transAz> <rotBx> <rotBy> <rotBz> "
                  "<transBx> <transBy> <transBz>\n";
   }
 }
 
-void cmdTranslate(ApplicationState& app, std::istringstream& iss) {
+void cmdTranslate(ApplicationState &app, std::istringstream &iss)
+{
   double x, y, z;
-  if(iss >> x >> y >> z) {
+  if (iss >> x >> y >> z)
+  {
     auto tStart = std::chrono::high_resolution_clock::now();
     app.controller.setTranslation(x, y, z);
     PolyscopeBridge::translateMeshB(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
@@ -757,21 +954,27 @@ void cmdTranslate(ApplicationState& app, std::istringstream& iss) {
     double elapsedMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
     std::cout << "Translation applied (GPU Kernel): (" << x << ", " << y << ", " << z << ") in " << elapsedMs
               << " ms\n";
-  } else {
+  }
+  else
+  {
     std::cout << "Usage: translate <x> <y> <z>\n";
   }
 }
 
-void cmdClear(ApplicationState& app, std::istringstream&) {
-  if(!app.isLoaded) {
+void cmdClear(ApplicationState &app, std::istringstream &)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Warning: No meshes loaded, but clearing GPU memory allocations...\n";
   }
   app.controller.clearGPU();
   std::cout << "GPU memory buffers and cuBQL BVH acceleration structures cleared.\n";
 }
 
-void cmdReconstruct(ApplicationState& app, std::istringstream& iss) {
-  if(!app.isLoaded) {
+void cmdReconstruct(ApplicationState &app, std::istringstream &iss)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: No mesh loaded on CPU. Use 'load' first before reconstructing.\n";
     return;
   }
@@ -779,7 +982,8 @@ void cmdReconstruct(ApplicationState& app, std::istringstream& iss) {
   int levelA = 1;
   int levelB = 1;
 
-  if(!(iss >> levelA >> levelB)) {
+  if (!(iss >> levelA >> levelB))
+  {
     std::cout << "Usage: reconstruct <queryDescentLevel> <referenceDescentLevel>\n";
     return;
   }
@@ -794,31 +998,36 @@ void cmdReconstruct(ApplicationState& app, std::istringstream& iss) {
             << " ms.\n";
 }
 
-void cmdExport(ApplicationState& app, std::istringstream& iss) {
-  if(!app.isLoaded) {
+void cmdExport(ApplicationState &app, std::istringstream &iss)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: You must 'load' meshes before exporting.\n";
     return;
   }
   std::string meshTag = parseArgument(iss);
   std::string outPath = parseArgument(iss);
 
-  if(meshTag.empty() || outPath.empty()) {
+  if (meshTag.empty() || outPath.empty())
+  {
     std::cout << "Usage: export <A/B> <output.off>\n";
     return;
   }
 
-  const Mesh* targetMesh = nullptr;
-  if(meshTag == "A" || meshTag == "a")
+  const Mesh *targetMesh = nullptr;
+  if (meshTag == "A" || meshTag == "a")
     targetMesh = &app.meshA;
-  else if(meshTag == "B" || meshTag == "b")
+  else if (meshTag == "B" || meshTag == "b")
     targetMesh = &app.meshB;
-  else {
+  else
+  {
     std::cout << "Error: Invalid mesh target '" << meshTag << "'. Choose 'A' or 'B'.\n";
     return;
   }
 
   auto tStart = std::chrono::high_resolution_clock::now();
-  if(exportMeshToOff(*targetMesh, outPath)) {
+  if (exportMeshToOff(*targetMesh, outPath))
+  {
     auto tEnd = std::chrono::high_resolution_clock::now();
     double elapsedMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
     std::cout << "Successfully exported Mesh " << meshTag << " (" << num_vertices(*targetMesh) << " verts, "
@@ -827,15 +1036,19 @@ void cmdExport(ApplicationState& app, std::istringstream& iss) {
   }
 }
 
-void cmdGizmo(ApplicationState& app, std::istringstream& iss) {
+void cmdGizmo(ApplicationState &app, std::istringstream &iss)
+{
   int showA = 0, showB = -1;
-  if(iss >> showA) {
-    if(!(iss >> showB))
+  if (iss >> showA)
+  {
+    if (!(iss >> showB))
       showB = showA;
     PolyscopeBridge::setGizmosEnabled(showA != 0, showB != 0);
     std::cout << "Gizmo visibility updated: Mesh A = " << (showA != 0 ? "ON" : "OFF")
               << " | Mesh B = " << (showB != 0 ? "ON" : "OFF") << "\n";
-  } else {
+  }
+  else
+  {
     std::cout << "Usage: gizmo <show(0/1)> [showB(0/1)]  (e.g., 'gizmo 0' hides both)\n";
   }
 }
@@ -843,15 +1056,18 @@ void cmdGizmo(ApplicationState& app, std::istringstream& iss) {
 /**
  * @brief Executes classical CPU CGAL face-face intersection and updates the Polyscope viewport.
  */
-void cmdComputeCGALClassic(ApplicationState& app, std::istringstream& iss) {
-  if(!app.isLoaded) {
+void cmdComputeCGALClassic(ApplicationState &app, std::istringstream &iss)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: You must 'load' meshes before computing.\n";
     return;
   }
 
   // 1. Fetch current UI transformations from Polyscope
   float3 rotA, transA, rotB, transB;
-  if(!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB)) {
+  if (!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB))
+  {
     std::cout << "Error: Failed to fetch transform matrices from Polyscope.\n";
     return;
   }
@@ -885,7 +1101,8 @@ void cmdComputeCGALClassic(ApplicationState& app, std::istringstream& iss) {
   // Convert face descriptors to int2 pairs for Polyscope highlighting
   std::vector<int2> stdPairs;
   stdPairs.reserve(cgal_intersected_tris.size());
-  for(const auto& pair : cgal_intersected_tris) {
+  for (const auto &pair : cgal_intersected_tris)
+  {
     stdPairs.push_back(make_int2(static_cast<int>(pair.first), static_cast<int>(pair.second)));
   }
 
@@ -899,8 +1116,10 @@ void cmdComputeCGALClassic(ApplicationState& app, std::istringstream& iss) {
   std::cout << "=======================================================\n\n";
 }
 
-void cmdTestBVH(ApplicationState& app, std::istringstream& iss) {
-  if(!app.isLoaded) {
+void cmdTestBVH(ApplicationState &app, std::istringstream &iss)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: You must 'load' meshes first.\n";
     return;
   }
@@ -910,17 +1129,22 @@ void cmdTestBVH(ApplicationState& app, std::istringstream& iss) {
 
   iss >> queryDescentLevel >> referenceDescentLevel;
 
-  if(iss >> batchStr) {
-    if(batchStr == "INF" || batchStr == "inf") {
+  if (iss >> batchStr)
+  {
+    if (batchStr == "INF" || batchStr == "inf")
+    {
       batchMultiplier = std::numeric_limits<int>::max();
-    } else {
+    }
+    else
+    {
       batchMultiplier = std::stoi(batchStr);
     }
     iss >> mode >> leafThreshold >> predicateDoubleMode;
   }
 
   float3 rotA, transA, rotB, transB;
-  if(!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB)) {
+  if (!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB))
+  {
     std::cout << "!Error: Failed to fetch transform matrices from Polyscope.\n";
     return;
   }
@@ -928,7 +1152,7 @@ void cmdTestBVH(ApplicationState& app, std::istringstream& iss) {
   Point3 centerA(app.normCenterA.x, app.normCenterA.y, app.normCenterA.z);
   Point3 centerB(app.normCenterB.x, app.normCenterB.y, app.normCenterB.z);
   ExecutionStats testStats;
-  int2* outIntersectionPairs = nullptr;
+  int2 *outIntersectionPairs = nullptr;
   size_t outFinalCount = 0;
 
   auto tStart = std::chrono::high_resolution_clock::now();
@@ -943,11 +1167,14 @@ void cmdTestBVH(ApplicationState& app, std::istringstream& iss) {
   auto tEnd = std::chrono::high_resolution_clock::now();
   double elapsedMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
 
-  if(outIntersectionPairs && outFinalCount > 0) {
+  if (outIntersectionPairs && outFinalCount > 0)
+  {
     std::vector<int2> stdPairs(outIntersectionPairs, outIntersectionPairs + outFinalCount);
     PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
     std::free(outIntersectionPairs);
-  } else {
+  }
+  else
+  {
     PolyscopeBridge::highlightIntersections({}, num_faces(app.meshA), num_faces(app.meshB));
   }
 
@@ -983,18 +1210,95 @@ void cmdTestBVH(ApplicationState& app, std::istringstream& iss) {
   std::cout << "=======================================================\n\n";
 }
 
-void cmdStats(ApplicationState& app, std::istringstream&) {
-  if(!app.isLoaded) {
+void cmdStats(ApplicationState &app, std::istringstream &)
+{
+  if (!app.isLoaded)
+  {
     std::cout << "Error: No meshes loaded. Run 'load' first.\n";
     return;
   }
   app.edgeVisualizer.computeAndShow(app.meshA, app.meshB);
 }
 
+/**
+ * @brief Command 1: Prints the relative transformations (rotation and translation)
+ *        of both meshes currently active in the Polyscope viewport.
+ */
+void cmdGetTransforms(ApplicationState &app, std::istringstream &)
+{
+  if (!app.isLoaded)
+  {
+    std::cout << "Error: No meshes loaded. Load meshes first.\n";
+    return;
+  }
+
+  float3 rotA, transA, rotB, transB;
+  if (!PolyscopeBridge::getCurrentTransforms(rotA, transA, rotB, transB))
+  {
+    std::cout << "Error: Failed to fetch transform matrices from Polyscope UI.\n";
+    return;
+  }
+
+  std::cout << "\n=======================================================\n";
+  std::cout << "            CURRENT MESH TRANSFORMATIONS               \n";
+  std::cout << "=======================================================\n";
+  std::cout << "  Mesh A - Rotation (deg) : (" << rotA.x << ", " << rotA.y << ", " << rotA.z << ")\n";
+  std::cout << "  Mesh A - Translation    : (" << transA.x << ", " << transA.y << ", " << transA.z << ")\n";
+  std::cout << "  -----------------------------------------------------\n";
+  std::cout << "  Mesh B - Rotation (deg) : (" << rotB.x << ", " << rotB.y << ", " << rotB.z << ")\n";
+  std::cout << "  Mesh B - Translation    : (" << transB.x << ", " << transB.y << ", " << transB.z << ")\n";
+  std::cout << "=======================================================\n\n";
+}
+
+/**
+ * @brief Command 2: Calculates and prints the bounding box dimensions
+ *        (Min/Max bounds, Spans [Dx, Dy, Dz], and Centroid) for both meshes.
+ */
+void cmdGetBoundingBoxes(ApplicationState &app, std::istringstream &)
+{
+  if (!app.isLoaded)
+  {
+    std::cout << "Error: No meshes loaded. Load meshes first.\n";
+    return;
+  }
+
+  // Compute parallel AABBs in normalized space
+  BoundingBox3D boxA = computeMeshAABBParallel(app.meshA);
+  BoundingBox3D boxB = computeMeshAABBParallel(app.meshB);
+
+  double spanAx = boxA.max_x - boxA.min_x;
+  double spanAy = boxA.max_y - boxA.min_y;
+  double spanAz = boxA.max_z - boxA.min_z;
+  double3 centerA = boxA.getCenter();
+
+  double spanBx = boxB.max_x - boxB.min_x;
+  double spanBy = boxB.max_y - boxB.min_y;
+  double spanBz = boxB.max_z - boxB.min_z;
+  double3 centerB = boxB.getCenter();
+
+  std::cout << "\n=======================================================\n";
+  std::cout << "            MESH BOUNDING BOX DIMENSIONS               \n";
+  std::cout << "=======================================================\n";
+  std::cout << std::fixed << std::setprecision(6);
+  std::cout << "  [MESH A BOUNDING BOX]\n";
+  std::cout << "    Min Bounds : (" << boxA.min_x << ", " << boxA.min_y << ", " << boxA.min_z << ")\n";
+  std::cout << "    Max Bounds : (" << boxA.max_x << ", " << boxA.max_y << ", " << boxA.max_z << ")\n";
+  std::cout << "    Dimensions : Dx = " << spanAx << ", Dy = " << spanAy << ", Dz = " << spanAz << "\n";
+  std::cout << "    Centroid   : (" << centerA.x << ", " << centerA.y << ", " << centerA.z << ")\n";
+  std::cout << "  -----------------------------------------------------\n";
+  std::cout << "  [MESH B BOUNDING BOX]\n";
+  std::cout << "    Min Bounds : (" << boxB.min_x << ", " << boxB.min_y << ", " << boxB.min_z << ")\n";
+  std::cout << "    Max Bounds : (" << boxB.max_x << ", " << boxB.max_y << ", " << boxB.max_z << ")\n";
+  std::cout << "    Dimensions : Dx = " << spanBx << ", Dy = " << spanBy << ", Dz = " << spanBz << "\n";
+  std::cout << "    Centroid   : (" << centerB.x << ", " << centerB.y << ", " << centerB.z << ")\n";
+  std::cout << "=======================================================\n\n";
+}
+
 // --------------------------------------------------------------------
 // MAIN
 // --------------------------------------------------------------------
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
   std::cout << "Initializing CUDA environment...\n";
   warmupCUDA();
   std::cout << "Initialization complete.\n";
@@ -1007,7 +1311,8 @@ int main(int argc, char** argv) {
   app.timingVisualizer.init();
 
   // Register Polyscope GUI button callback
-  PolyscopeBridge::g_onFireCallback = [&app]() { executeMeshIntersectionPipeline(app); };
+  PolyscopeBridge::g_onFireCallback = [&app]()
+  { executeMeshIntersectionPipeline(app); };
 
   // Register UI Commands
   CommandDispatcher ui;
@@ -1015,33 +1320,42 @@ int main(int argc, char** argv) {
   ui.registerCommand(
       "load", "<meshA.off> [meshB.off] [queryDescentLevel] [referenceDescentLevel] [leafThresh] [scaleToUnit(0/1)]",
       "Loads meshes via fast parallel IO, normalizes CGAL & GPU in-place, and constructs BVHs.",
-      [&](std::istringstream& iss) { cmdLoad(app, iss, false); });
+      [&](std::istringstream &iss)
+      { cmdLoad(app, iss, false); });
 
   ui.registerCommand(
       "loadOld", "<meshA.off> [meshB.off] [queryDescentLevel] [referenceDescentLevel] [leafThresh] [scaleToUnit(0/1)]",
       "Loads meshes via standard sequential CGAL stream loader.",
-      [&](std::istringstream& iss) { cmdLoad(app, iss, true); });
+      [&](std::istringstream &iss)
+      { cmdLoad(app, iss, true); });
 
- ui.registerCommand("compute", "[batchMultiplier] [DualTreeSteps] [GpuPredicates mode] [showCurves]",
+  ui.registerCommand("compute", "[batchMultiplier] [DualTreeSteps] [GpuPredicates mode] [showCurves]",
                      "Syncs active viewport/gizmo transforms to GPU and executes intersection pipeline.",
-                     [&](std::istringstream& iss) {
+                     [&](std::istringstream &iss)
+                     {
                        int batchMultiplier = std::numeric_limits<int>::max();
                        int mode = 0;
                        int enableGpuDoublePrecision = 1; // Default to 1 (true)
                        bool showCurves = false;          // Default to false
 
                        std::string batchStr;
-                       if (iss >> batchStr) {
-                         if (batchStr == "INF" || batchStr == "inf") {
+                       if (iss >> batchStr)
+                       {
+                         if (batchStr == "INF" || batchStr == "inf")
+                         {
                            batchMultiplier = std::numeric_limits<int>::max();
-                         } else {
+                         }
+                         else
+                         {
                            batchMultiplier = std::stoi(batchStr);
                          }
-                         
-                         if (iss >> mode >> enableGpuDoublePrecision) {
+
+                         if (iss >> mode >> enableGpuDoublePrecision)
+                         {
                            // Parse 0/1 or true/false for showCurves if provided
                            std::string curvesStr;
-                           if (iss >> curvesStr) {
+                           if (iss >> curvesStr)
+                           {
                              showCurves = (curvesStr == "1" || curvesStr == "true" || curvesStr == "TRUE");
                            }
                          }
@@ -1053,75 +1367,91 @@ int main(int argc, char** argv) {
   ui.registerCommand(
       "transform",
       "<rotAx> <rotAy> <rotAz> <transAx> <transAy> <transAz> <rotBx> <rotBy> <rotBz> <transBx> <transBy> <transBz>",
-      "Sets transformation matrices for Mesh A and Mesh B.", [&](std::istringstream& iss) { cmdTransform(app, iss); });
+      "Sets transformation matrices for Mesh A and Mesh B.", [&](std::istringstream &iss)
+      { cmdTransform(app, iss); });
 
   ui.registerCommand("translate", "<x> <y> <z>", "Translates Mesh B directly via GPU kernel shifting.",
-                     [&](std::istringstream& iss) { cmdTranslate(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdTranslate(app, iss); });
 
   ui.registerCommand("gizmo", "<showA(0/1)> [showB(0/1)]", "Shows or hides 3D drag gizmos in the active viewport.",
-                     [&](std::istringstream& iss) { cmdGizmo(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdGizmo(app, iss); });
 
   ui.registerCommand(
       "standaloneCompute",
       "[queryDescentLevel] [referenceDescentLevel] [batchMultiplier] [NumDualTreeSteps] [leafThresh] [GpuPredicates "
       "mode]",
       "Computes intersection between two meshes using alternative routine by constructing new partial BVH",
-      [&](std::istringstream& iss) { cmdTestBVH(app, iss); });
+      [&](std::istringstream &iss)
+      { cmdTestBVH(app, iss); });
 
   ui.registerCommand("export", "<mesh_tag(A/B)> <out_filename.off>",
                      "Exports Mesh A or Mesh B in full 17-digit precision to OFF format.",
-                     [&](std::istringstream& iss) { cmdExport(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdExport(app, iss); });
 
   ui.registerCommand("clear", "", "Frees GPU memory buffers and cuBQL structures without wiping CPU mesh data.",
-                     [&](std::istringstream& iss) { cmdClear(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdClear(app, iss); });
 
   ui.registerCommand("reconstruct", "<queryDescentLevel> <referenceDescentLevel>",
                      "Re-allocates GPU buffers and rebuilds BVHs using cached CPU data.",
-                     [&](std::istringstream& iss) { cmdReconstruct(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdReconstruct(app, iss); });
 
   ui.registerCommand("stats", "", "Displays high-precision geometric statistics and visualizes degeneracies.",
-                     [&](std::istringstream& iss) { cmdStats(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdStats(app, iss); });
 
   ui.registerCommand("scale", "", "Prints current scale factor, scene bounds center, and mesh centroids.",
-                     [&](std::istringstream& iss) { cmdScale(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdScale(app, iss); });
 
   ui.registerCommand("tbb", "<num_threads>", "Sets active CPU worker thread limit for TBB operations.",
-                     [&](std::istringstream& iss) { cmdTbb(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdTbb(app, iss); });
 
   ui.registerCommand("help", "", "Displays this command usage reference.",
-                     [&](std::istringstream&) { ui.printHelp(); });
+                     [&](std::istringstream &)
+                     { ui.printHelp(); });
 
   ui.registerCommand("profile", "", "Displays graphical stacked timing bar chart for execution phases.",
-                     [&](std::istringstream&) {
-                       if(app.isLoaded)
+                     [&](std::istringstream &)
+                     {
+                       if (app.isLoaded)
                          app.timingVisualizer.show();
                      });
 
-
   ui.registerCommand("ComputeCGALClassic", "",
                      "Computes intersections using classical CPU CGAL PMP and highlights them.",
-                     [&](std::istringstream& iss) { cmdComputeCGALClassic(app, iss); });
+                     [&](std::istringstream &iss)
+                     { cmdComputeCGALClassic(app, iss); });
 
   ui.registerCommand("ComputeCGALParallel", "",
-                   "Computes intersections using experimental parallel CGAL intersector.",
-                   [&](std::istringstream& iss) { cmdComputeCGALParallel(app, iss); });
+                     "Computes intersections using experimental parallel CGAL intersector.",
+                     [&](std::istringstream &iss)
+                     { cmdComputeCGALParallel(app, iss); });
 
   ui.registerAlias("cgalparallel", "ComputeCGALParallel");
   ui.registerAlias("cgalp", "ComputeCGALParallel");
 
   ui.registerCommand("testConfig",
-                     "[steps] [trans] [rotDeg] [precision] [dualTreeSteps] [queryLvl] [refLvl] [batch] [seed]",
-                     "Displays or updates test parameters for the automated test suite.",
-                     [&](std::istringstream& iss) { cmdTestConfig(app, iss); });
+                   "[steps] [trans|auto[:ratio]] [rotDeg] [precision] [dualTreeSteps] [queryLvl] [refLvl] [batch] [seed] [csvPath]",
+                   "Displays or updates test parameters. Supports 'auto' or 'auto:0.15' for dynamic translation scaling.",
+                   [&](std::istringstream &iss)
+                   { cmdTestConfig(app, iss); });
 
   ui.registerCommand("runSuite", "", "Executes automated test suite sweep with active TestConfig parameters.",
-                     [&](std::istringstream&) {
+                     [&](std::istringstream &)
+                     {
                        TestSuite suite(app);
                        suite.runSuite(g_testConfig);
                      });
-  ui.registerCommand("HelpPredicateModes", "", 
+  ui.registerCommand("HelpPredicateModes", "",
                      "Displays the available GPU precision modes for exact predicates.",
-                     [&](std::istringstream&) {
+                     [&](std::istringstream &)
+                     {
                        std::cout << "\n=======================================================\n";
                        std::cout << "               PREDICATE COMPUTE MODES                 \n";
                        std::cout << "=======================================================\n";
@@ -1133,10 +1463,28 @@ int main(int argc, char** argv) {
                        std::cout << "=======================================================\n\n";
                      });
 
+  // Register Command 1: Print current transformations
+  ui.registerCommand("getTransform", "", "Prints current translation and rotation for both meshes.",
+                     [&](std::istringstream &iss)
+                     { cmdGetTransforms(app, iss); });
+
+  ui.registerAlias("gettransforms", "getTransform");
+  ui.registerAlias("transforms", "getTransform");
+
+  // Register Command 2: Print bounding box dimensions
+  ui.registerCommand("getBounds", "", "Prints full bounding box extents and dimensions (Dx, Dy, Dz) of both meshes.",
+                     [&](std::istringstream &iss)
+                     { cmdGetBoundingBoxes(app, iss); });
+
+  ui.registerAlias("getbounds", "getBounds");
+  ui.registerAlias("bbox", "getBounds");
+  ui.registerAlias("bounds", "getBounds");
+
   // Optional: Add a shorter alias so you can just type 'modes' in the terminal
   ui.registerAlias("modes", "HelpPredicateModes");
 
-  ui.registerCommand("quit", "", "Exits the application.", [&](std::istringstream&) { g_running = false; });
+  ui.registerCommand("quit", "", "Exits the application.", [&](std::istringstream &)
+                     { g_running = false; });
 
   // Register shortcuts and aliases
   ui.registerAlias("cgalclassic", "ComputeCGALClassic");
@@ -1153,19 +1501,22 @@ int main(int argc, char** argv) {
 
   std::thread inputThread(inputThreadWorker);
 
-  while(g_running) {
+  while (g_running)
+  {
     std::string line;
     bool haveLine = false;
     {
       std::lock_guard<std::mutex> lock(g_cmdMutex);
-      if(!g_cmdQueue.empty()) {
+      if (!g_cmdQueue.empty())
+      {
         line = g_cmdQueue.front();
         g_cmdQueue.pop();
         haveLine = true;
       }
     }
 
-    if(haveLine) {
+    if (haveLine)
+    {
       ui.execute(line);
 
       {
@@ -1180,10 +1531,14 @@ int main(int argc, char** argv) {
   }
 
   std::cout << "Cleaning up and exiting...\n";
-  if(inputThread.joinable()) {
-    if(g_running == false) {
+  if (inputThread.joinable())
+  {
+    if (g_running == false)
+    {
       inputThread.detach();
-    } else {
+    }
+    else
+    {
       inputThread.join();
     }
   }

@@ -8,7 +8,6 @@
 
 #include "CPU/CgalDefinitions.h"
 
-// Forward declaration to decouple host headers
 class KernelBVHController;
 struct ApplicationState;
 
@@ -19,12 +18,14 @@ struct TestConfig {
     unsigned int seed = 1337;
     bool testMainGpuPipeline = true;
     bool testStandalonePipeline = true;
+    bool testCgalParallel = true;
     int enableGpuPrecision = 1;
     int queryDescentLevel = 12;
     int referenceDescentLevel = 12;
     int batchMultiplier = 2147483647;
     int dualTreeSteps = 8;
     int leafThreshold = 20;
+    std::string csvOutputPath = "benchmark_results.csv";
 };
 
 struct VerificationResult {
@@ -35,18 +36,28 @@ struct VerificationResult {
     size_t groundTruthCount = 0;
     size_t gpuMainCount = 0;
     size_t standaloneCount = 0;
+    size_t cgalParallelCount = 0;
 
     bool gpuMainExactMatch = false;
     bool standaloneExactMatch = false;
+    bool cgalParallelExactMatch = false;
 
     size_t mainFalsePositives = 0;
     size_t mainFalseNegatives = 0;
     size_t standaloneFalsePositives = 0;
     size_t standaloneFalseNegatives = 0;
 
-    double cgalTimeMs = 0.0;
+    // Execution Times (ms)
+    double cgalClassicTimeMs = 0.0;
+    double cgalParallelTimeMs = 0.0;
     double gpuMainTimeMs = 0.0;
     double standaloneTimeMs = 0.0;
+
+    // Candidate Yield & Overlap Metrics
+    size_t totalPossiblePairs = 0; // M_A * M_B
+    size_t candidatePairs = 0;     // N_cand
+    double candidateYield = 0.0;   // N_cand / (M_A * M_B)
+    double surfaceOverlapRatio = 0.0; // Omega = (S_A_int + S_B_int) / (S_A + S_B)
 };
 
 class TestSuite {
@@ -65,9 +76,26 @@ public:
 private:
     ApplicationState& app_;
 
+
+    double computeTotalMeshArea(const Mesh& mesh);
+    
+    double computeIntersectedSurfaceArea(
+        const Mesh& meshA, 
+        const Mesh& meshB, 
+        const std::set<std::pair<int, int>>& intersectedPairs,
+        double totalAreaA,
+        double totalAreaB
+    );
+    
     std::set<std::pair<int, int>> convertToCanonicalSet(const std::vector<int2>& pairs);
 
     std::vector<int2> runCGALClassicGroundTruth(
+        const double3& rotA, const double3& transA,
+        const double3& rotB, const double3& transB,
+        double& outTimeMs
+    );
+
+    std::vector<int2> runCGALParallel(
         const double3& rotA, const double3& transA,
         const double3& rotB, const double3& transB,
         double& outTimeMs
@@ -77,15 +105,19 @@ private:
         const double3& rotA, const double3& transA,
         const double3& rotB, const double3& transB,
         const TestConfig& config,
-        double& outTimeMs
+        double& outTimeMs,
+        size_t& outCandidates
     );
 
     std::vector<int2> runStandalonePipeline(
         const double3& rotA, const double3& transA,
         const double3& rotB, const double3& transB,
         const TestConfig& config,
-        double& outTimeMs
+        double& outTimeMs,
+        size_t& outCandidates
     );
+
+    void exportToCSV(const std::string& filepath, const std::vector<VerificationResult>& results);
 };
 
 #endif // TEST_SUITE_H
