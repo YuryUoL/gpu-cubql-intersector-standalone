@@ -8,7 +8,7 @@
 #include "ApplicationState.h"
 
 #include <CGAL/Polygon_mesh_processing/intersection.h>
-
+#include <CGAL/Polygon_mesh_processing/measure.h>
 
 #include <iostream>
 #include <fstream>
@@ -16,8 +16,6 @@
 #include <chrono>
 #include <cmath>
 #include <random>
-
-#include <CGAL/Polygon_mesh_processing/measure.h>
 
 TestSuite::TestSuite(ApplicationState& appState) : app_(appState) {}
 
@@ -135,19 +133,20 @@ std::vector<int2> TestSuite::runMainGPUPipeline(
     const double3& rotB, const double3& transB,
     const TestConfig& config,
     double& outTimeMs,
-    size_t& outCandidates) 
+    size_t& outCandidates,
+    ExecutionStats& outStats) 
 {
     if (!app_.controller.isGPUAllocated()) {
         app_.controller.reconstructGPU(app_.stats);
     }
 
+    auto tStart = std::chrono::high_resolution_clock::now();
     float tGPU, tCPU, tTV, tAT, tGB;
     app_.controller.setTransformBoth(rotA, transA, rotB, transB, tGPU, tCPU, tTV, tAT, tGB);
 
     int2* outPairs = nullptr;
     size_t outCount = 0;
 
-    auto tStart = std::chrono::high_resolution_clock::now();
     app_.controller.runIntersectionPipeline(
         config.batchMultiplier, config.dualTreeSteps, 0, outPairs, outCount, 
         app_.stats, config.enableGpuPrecision
@@ -155,6 +154,7 @@ std::vector<int2> TestSuite::runMainGPUPipeline(
     auto tEnd = std::chrono::high_resolution_clock::now();
     outTimeMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
     outCandidates = app_.stats.finalAabbCandidatePairs;
+    outStats = app_.stats;
 
     std::vector<int2> results;
     if (outPairs && outCount > 0) {
@@ -169,7 +169,8 @@ std::vector<int2> TestSuite::runStandalonePipeline(
     const double3& rotB, const double3& transB,
     const TestConfig& config,
     double& outTimeMs,
-    size_t& outCandidates) 
+    size_t& outCandidates,
+    ExecutionStats& outStats) 
 {
     Point3 centerA(app_.normCenterA.x, app_.normCenterA.y, app_.normCenterA.z);
     Point3 centerB(app_.normCenterB.x, app_.normCenterB.y, app_.normCenterB.z);
@@ -190,6 +191,7 @@ std::vector<int2> TestSuite::runStandalonePipeline(
     auto tEnd = std::chrono::high_resolution_clock::now();
     outTimeMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
     outCandidates = testStats.finalAabbCandidatePairs;
+    outStats = testStats;
 
     std::vector<int2> results;
     if (outPairs && outCount > 0) {
@@ -232,9 +234,9 @@ VerificationResult TestSuite::evaluateStep(
         res.cgalParallelExactMatch = (gtSet == cgalPSet);
     }
 
-    // 3. Main GPU Pipeline (Hybrid)
+    // 3. Main GPU Pipeline (Standard Compute)
     if (config.testMainGpuPipeline) {
-        auto mainPairs = runMainGPUPipeline(rotA, transA, rotB, transB, config, res.gpuMainTimeMs, res.candidatePairs);
+        auto mainPairs = runMainGPUPipeline(rotA, transA, rotB, transB, config, res.gpuMainTimeMs, res.candidatePairs, res.mainStats);
         auto mainSet = convertToCanonicalSet(mainPairs);
         res.gpuMainCount = mainSet.size();
         res.gpuMainExactMatch = (gtSet == mainSet);
@@ -250,7 +252,7 @@ VerificationResult TestSuite::evaluateStep(
     // 4. Standalone Pipeline
     if (config.testStandalonePipeline) {
         size_t standaloneCandidates = 0;
-        auto standalonePairs = runStandalonePipeline(rotA, transA, rotB, transB, config, res.standaloneTimeMs, standaloneCandidates);
+        auto standalonePairs = runStandalonePipeline(rotA, transA, rotB, transB, config, res.standaloneTimeMs, standaloneCandidates, res.standaloneStats);
         auto standaloneSet = convertToCanonicalSet(standalonePairs);
         res.standaloneCount = standaloneSet.size();
         res.standaloneExactMatch = (gtSet == standaloneSet);
@@ -268,6 +270,7 @@ VerificationResult TestSuite::evaluateStep(
     return res;
 }
 
+// 1. Summary CSV (Overall Benchmarks)
 void TestSuite::exportToCSV(const std::string& filepath, const std::vector<VerificationResult>& results) {
     std::ofstream csv(filepath);
     if (!csv.is_open()) {
@@ -275,7 +278,6 @@ void TestSuite::exportToCSV(const std::string& filepath, const std::vector<Verif
         return;
     }
 
-    // CSV Header
     csv << "step,intersections,candidates,total_possible_pairs,candidate_yield,surface_overlap_omega,"
         << "hybrid_ms,hybrid_standalone_ms,cgal_classic_ms,cgal_parallel_ms,"
         << "hybrid_match,standalone_match,cgal_parallel_match\n";
@@ -297,7 +299,89 @@ void TestSuite::exportToCSV(const std::string& filepath, const std::vector<Verif
             << (res.cgalParallelExactMatch ? 1 : 0) << "\n";
     }
 
-    std::cout << "[TestSuite] Benchmark table saved to: " << filepath << "\n";
+    std::cout << "[TestSuite] Summary benchmark table saved to: " << filepath << "\n";
+}
+
+// 2. Standard Compute Breakdown CSV
+void TestSuite::exportStandardComputeCSV(const std::string& filepath, const std::vector<VerificationResult>& results) {
+    std::ofstream csv(filepath);
+    if (!csv.is_open()) {
+        std::cerr << "Error: Could not open Standard Compute CSV file: " << filepath << "\n";
+        return;
+    }
+
+    csv << "step,gpu_total_ms,cross_check_engine_ms,dual_tree_step_ms,parallel_dfs_descent_ms,"
+        << "preallocate_ms,assembly_phase_ms,aabb_candidate_exec_ms,gpu_float_predicates_ms,"
+        << "gpu_double_predicates_ms,thrust_compaction_d2h_ms,cpu_narrow_phase_ms,"
+        << "loop_workspace_cleanup_ms,explicit_cleanup_sync_ms\n";
+
+    csv << std::setprecision(10);
+    for (const auto& res : results) {
+        const auto& s = res.mainStats;
+        csv << res.stepIndex << ","
+            << s.GPUTotalTime << ","
+            << s.gpuCrossCheckEngineMs << ","
+            << s.dualTreeStepMs << ","
+            << s.parallelDfsDescentBMs << ","
+            << s.loopTracker.preallocateTimeMs << ","
+            << s.loopTracker.assemblyPhaseMs << ","
+            << s.loopTracker.executionPhaseMs << ","
+            << s.loopTracker.fineEvaluationPhaseMs << ","
+            << s.loopTracker.gpuDoublePredicatesMs << ","
+            << s.loopTracker.DownloadAndClean << ","
+            << s.loopTracker.CPUPredicates << ","
+            << s.loopTracker.cleanupTimeMs << ","
+            << s.finalCleanupSyncMs << "\n";
+    }
+
+    std::cout << "[TestSuite] Standard Compute breakdown saved to: " << filepath << "\n";
+}
+
+// 3. Standalone Compute Breakdown CSV
+void TestSuite::exportStandaloneComputeCSV(const std::string& filepath, const std::vector<VerificationResult>& results) {
+    std::ofstream csv(filepath);
+    if (!csv.is_open()) {
+        std::cerr << "Error: Could not open Standalone Compute CSV file: " << filepath << "\n";
+        return;
+    }
+
+    csv << "step,gpu_total_ms,raw_alloc_copy_ms,thrust_init_overhead_ms,build_refit_mesh_a_ms,build_refit_mesh_b_ms,"
+        << "cross_check_engine_ms,dual_tree_step_ms,parallel_dfs_descent_ms,preallocate_ms,"
+        << "assembly_phase_ms,aabb_candidate_exec_ms,gpu_float_predicates_ms,gpu_double_predicates_ms,"
+        << "thrust_compaction_d2h_ms,cpu_narrow_phase_ms,loop_workspace_cleanup_ms,explicit_cleanup_sync_ms\n";
+
+    csv << std::setprecision(10);
+    for (const auto& res : results) {
+        const auto& s = res.standaloneStats;
+        csv << res.stepIndex << ","
+            << s.GPUTotalTime << ","
+            << s.initialAllocAndCopyMs << ","
+            << s.thrustInitOverheadMs << ","
+            << s.buildRefitMeshAMs << ","
+            << s.buildRefitMeshBMs << ","
+            << s.gpuCrossCheckEngineMs << ","
+            << s.dualTreeStepMs << ","
+            << s.parallelDfsDescentBMs << ","
+            << s.loopTracker.preallocateTimeMs << ","
+            << s.loopTracker.assemblyPhaseMs << ","
+            << s.loopTracker.executionPhaseMs << ","
+            << s.loopTracker.fineEvaluationPhaseMs << ","
+            << s.loopTracker.gpuDoublePredicatesMs << ","
+            << s.loopTracker.DownloadAndClean << ","
+            << s.loopTracker.CPUPredicates << ","
+            << s.loopTracker.cleanupTimeMs << ","
+            << s.finalCleanupSyncMs << "\n";
+    }
+
+    std::cout << "[TestSuite] Standalone Compute breakdown saved to: " << filepath << "\n";
+}
+
+static std::string deriveFilename(const std::string& basePath, const std::string& suffix) {
+    size_t dotPos = basePath.find_last_of('.');
+    if (dotPos == std::string::npos) {
+        return basePath + suffix + ".csv";
+    }
+    return basePath.substr(0, dotPos) + suffix + ".csv";
 }
 
 void TestSuite::runSuite(const TestConfig& config) {
@@ -365,6 +449,14 @@ void TestSuite::runSuite(const TestConfig& config) {
           << "CGAL_Parallel=" << res.cgalParallelTimeMs << "ms\n";
     }
 
-    exportToCSV(config.csvOutputPath, allResults);
+    // Export all 3 CSV files
+    std::string summaryCsv = config.csvOutputPath;
+    std::string standardCsv = deriveFilename(config.csvOutputPath, "_standard_breakdown");
+    std::string standaloneCsv = deriveFilename(config.csvOutputPath, "_standalone_breakdown");
+
+    exportToCSV(summaryCsv, allResults);
+    exportStandardComputeCSV(standardCsv, allResults);
+    exportStandaloneComputeCSV(standaloneCsv, allResults);
+
     std::cout << "========================================================================================\n\n";
 }
