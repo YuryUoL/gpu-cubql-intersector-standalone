@@ -629,20 +629,24 @@ void executeMeshIntersectionPipeline(ApplicationState &app,
   }
 
   float tGPU, tCPU, tTV, tAT, tGB;
+
+  auto tStart = std::chrono::high_resolution_clock::now();
+
   app.controller.setTransformBoth(make_double3(rotA.x, rotA.y, rotA.z), make_double3(transA.x, transA.y, transA.z),
                                   make_double3(rotB.x, rotB.y, rotB.z), make_double3(transB.x, transB.y, transB.z),
                                   tGPU, tCPU, tTV, tAT, tGB);
 
-  auto tStart = std::chrono::high_resolution_clock::now();
+  
   int2 *outIntersectionPairs = nullptr;
   size_t outFinalCount = 0;
 
   app.controller.runIntersectionPipeline(batchMultiplier, mode, 0, outIntersectionPairs, outFinalCount, app.stats,
                                          enableGpuDoublePrecision);
 
+  auto tEnd = std::chrono::high_resolution_clock::now();
   app.timingVisualizer.updateAndShowCompute(app.stats);
 
-  auto tEnd = std::chrono::high_resolution_clock::now();
+  
   double elapsedMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
 
   std::vector<int2> stdPairs;

@@ -313,7 +313,8 @@ void TestSuite::exportStandardComputeCSV(const std::string& filepath, const std:
     csv << "step,gpu_total_ms,cross_check_engine_ms,dual_tree_step_ms,parallel_dfs_descent_ms,"
         << "preallocate_ms,assembly_phase_ms,aabb_candidate_exec_ms,gpu_float_predicates_ms,"
         << "gpu_double_predicates_ms,thrust_compaction_d2h_ms,cpu_narrow_phase_ms,"
-        << "loop_workspace_cleanup_ms,explicit_cleanup_sync_ms\n";
+        << "loop_workspace_cleanup_ms,explicit_cleanup_sync_ms,"
+        << "confirmed_green_pairs,confirmed_yellow_pairs,confirmed_orange_pairs\n";
 
     csv << std::setprecision(10);
     for (const auto& res : results) {
@@ -331,7 +332,10 @@ void TestSuite::exportStandardComputeCSV(const std::string& filepath, const std:
             << s.loopTracker.DownloadAndClean << ","
             << s.loopTracker.CPUPredicates << ","
             << s.loopTracker.cleanupTimeMs << ","
-            << s.finalCleanupSyncMs << "\n";
+            << s.finalCleanupSyncMs << ","
+            << s.loopTracker.confirmedGreenPairs << ","
+            << s.loopTracker.confirmedYellowPairs << ","
+            << s.loopTracker.confirmedOrangePairs << "\n";
     }
 
     std::cout << "[TestSuite] Standard Compute breakdown saved to: " << filepath << "\n";
@@ -348,7 +352,8 @@ void TestSuite::exportStandaloneComputeCSV(const std::string& filepath, const st
     csv << "step,gpu_total_ms,raw_alloc_copy_ms,thrust_init_overhead_ms,build_refit_mesh_a_ms,build_refit_mesh_b_ms,"
         << "cross_check_engine_ms,dual_tree_step_ms,parallel_dfs_descent_ms,preallocate_ms,"
         << "assembly_phase_ms,aabb_candidate_exec_ms,gpu_float_predicates_ms,gpu_double_predicates_ms,"
-        << "thrust_compaction_d2h_ms,cpu_narrow_phase_ms,loop_workspace_cleanup_ms,explicit_cleanup_sync_ms\n";
+        << "thrust_compaction_d2h_ms,cpu_narrow_phase_ms,loop_workspace_cleanup_ms,explicit_cleanup_sync_ms,"
+        << "confirmed_green_pairs,confirmed_yellow_pairs,confirmed_orange_pairs\n";
 
     csv << std::setprecision(10);
     for (const auto& res : results) {
@@ -370,7 +375,10 @@ void TestSuite::exportStandaloneComputeCSV(const std::string& filepath, const st
             << s.loopTracker.DownloadAndClean << ","
             << s.loopTracker.CPUPredicates << ","
             << s.loopTracker.cleanupTimeMs << ","
-            << s.finalCleanupSyncMs << "\n";
+            << s.finalCleanupSyncMs << ","
+            << s.loopTracker.confirmedGreenPairs << ","
+            << s.loopTracker.confirmedYellowPairs << ","
+            << s.loopTracker.confirmedOrangePairs << "\n";
     }
 
     std::cout << "[TestSuite] Standalone Compute breakdown saved to: " << filepath << "\n";
