@@ -12,6 +12,16 @@ project(meshIntersectionRegistration LANGUAGES CXX CUDA)
 # ====================================================================
 
 option(BUILD_ARCHIVED_TARGETS "Build archived legacy executables" OFF)
+option(USE_EXACT_KERNEL "Use CGAL Exact Constructions Kernel (EPEK)" OFF)
+
+if(USE_EXACT_KERNEL)
+    add_compile_definitions(USE_EXACT_KERNEL)
+    message(STATUS "CGAL Kernel: Exact Constructions (EPEK) enabled.")
+else()
+    message(STATUS "CGAL Kernel: Inexact Constructions (EPIC) enabled (Default).")
+endif()
+
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Export compile commands for IDEs" FORCE)
 
 # Global language standards

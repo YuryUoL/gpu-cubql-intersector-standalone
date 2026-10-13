@@ -16,9 +16,12 @@ using Segment3 = Kernel::Segment_3;
 namespace detail {
 
 inline ExactPoint3POD toPOD(const Point3& pt) {
-  return { pt.x(), pt.y(), pt.z() };
+  return { 
+      CGAL::to_double(pt.x()), 
+      CGAL::to_double(pt.y()), 
+      CGAL::to_double(pt.z()) 
+  };
 }
-
 } // namespace detail
 
 std::vector<IntersectionSegment> computeExactIntersectionCurves(

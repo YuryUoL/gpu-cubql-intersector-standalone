@@ -86,9 +86,10 @@ inline CGAL::Aff_transformation_3<Kernel> createRigidTransformation(
 
     Mat3x3 R = makeRotationMatrixDeg(rotDeg);
 
-    double cx_p = center.x();
-    double cy_p = center.y();
-    double cz_p = center.z();
+    // Wrap with CGAL::to_double() for exact kernel compatibility
+    double cx_p = CGAL::to_double(center.x());
+    double cy_p = CGAL::to_double(center.y());
+    double cz_p = CGAL::to_double(center.z());
 
     // T_total = C + T - (R * C)
     double tX = cx_p + trans.x - (R.m[0][0] * cx_p + R.m[0][1] * cy_p + R.m[0][2] * cz_p);
@@ -101,7 +102,6 @@ inline CGAL::Aff_transformation_3<Kernel> createRigidTransformation(
         R.m[2][0], R.m[2][1], R.m[2][2], tZ
     );
 }
-
 // ============================================================================
 // 3. METHOD 1: CGAL MESH TRANSFORMATION (CPU TBB)
 // ============================================================================
@@ -120,7 +120,10 @@ inline void transformCgalMesh(
     const size_t numPoints = mesh->num_vertices();
     Mat3x3 R = makeRotationMatrixDeg(rotDeg);
 
-    double cx_p = center.x(), cy_p = center.y(), cz_p = center.z();
+    // Wrap with CGAL::to_double() here as well
+    double cx_p = CGAL::to_double(center.x());
+    double cy_p = CGAL::to_double(center.y());
+    double cz_p = CGAL::to_double(center.z());
     double tx = trans.x, ty = trans.y, tz = trans.z;
 
     tbb::parallel_for(tbb::blocked_range<size_t>(0, numPoints),
@@ -129,9 +132,9 @@ inline void transformCgalMesh(
                 typename Mesh::Vertex_index vd(static_cast<typename Mesh::size_type>(i));
                 if (!mesh->is_removed(vd)) {
                     const Point3& pOrig = origPoints[i];
-                    double x = pOrig.x() - cx_p;
-                    double y = pOrig.y() - cy_p;
-                    double z = pOrig.z() - cz_p;
+                    double x = CGAL::to_double(pOrig.x()) - cx_p;
+                    double y = CGAL::to_double(pOrig.y()) - cy_p;
+                    double z = CGAL::to_double(pOrig.z()) - cz_p;
 
                     double rx = R.m[0][0] * x + R.m[0][1] * y + R.m[0][2] * z;
                     double ry = R.m[1][0] * x + R.m[1][1] * y + R.m[1][2] * z;

@@ -23,9 +23,11 @@
 // Your Mesh Definition Header
 #include "CgalDefinitions.h"
 
-class MeshTriangleDegeneracyVisualizer {
+class MeshTriangleDegeneracyVisualizer
+{
 public:
-    struct HistogramData {
+    struct HistogramData
+    {
         std::string meshName;
         std::vector<float> binCounts;
         std::vector<double> binEdges;
@@ -33,11 +35,12 @@ public:
         double maxLength = 0.0; // Represents Max Quality Q
         double avgLength = 0.0; // Represents Avg Quality Q
         double totalLength = 0.0;
-        size_t totalEdges = 0;  // Represents total face count
+        size_t totalEdges = 0; // Represents total face count
         bool isValid = false;
     };
 
-    struct LocalStats {
+    struct LocalStats
+    {
         double minLen = std::numeric_limits<double>::infinity();
         double maxLen = -1.0;
         double totalLen = 0.0;
@@ -49,7 +52,7 @@ private:
     HistogramData m_dataA;
     HistogramData m_dataB;
     bool m_isVisible = false;
-    int m_numBins = 25;      // Default 25 bins
+    int m_numBins = 25; // Default 25 bins
     bool m_useLogScale = false;
 
     // Shared global range across both meshes for consistent X-axis comparison
@@ -57,12 +60,13 @@ private:
     double m_globalMaxLength = 0.0;
 
     // Cached references for dynamic UI re-binning
-    const Mesh* m_cachedMeshA = nullptr;
-    const Mesh* m_cachedMeshB = nullptr;
+    const Mesh *m_cachedMeshA = nullptr;
+    const Mesh *m_cachedMeshB = nullptr;
 
     // Helper to evaluate triangle quality Q in [0, 1]
     static inline double computeTriangleQuality(double dx0, double dy0, double dz0,
-                                                 double dx1, double dy1, double dz1) {
+                                                double dx1, double dy1, double dz1)
+    {
         // Cross product for Area vector
         double cx = dy0 * dz1 - dz0 * dy1;
         double cy = dz0 * dx1 - dx0 * dz1;
@@ -79,7 +83,8 @@ private:
         double l2_sq = dx2 * dx2 + dy2 * dy2 + dz2 * dz2;
 
         double sumSqEdges = l0_sq + l1_sq + l2_sq;
-        if (sumSqEdges <= 1e-15) return 0.0;
+        if (sumSqEdges <= 1e-15)
+            return 0.0;
 
         // Q = (4 * sqrt(3) * Area) / (a^2 + b^2 + c^2)
         // Note: doubleArea = 2 * Area, so 2 * sqrt(3) * doubleArea
@@ -93,33 +98,42 @@ public:
     MeshTriangleDegeneracyVisualizer() = default;
 
     // Registers the render hook into Polyscope's main loop
-    void init() {
-        polyscope::state::userCallback = [this]() {
+    void init()
+    {
+        polyscope::state::userCallback = [this]()
+        {
             this->renderUI();
         };
     }
 
     // Call this inside your CLI command handler
-    void computeAndShow(const Mesh& meshA, const Mesh& meshB) {
+    void computeAndShow(const Mesh &meshA, const Mesh &meshB)
+    {
         m_cachedMeshA = &meshA;
         m_cachedMeshB = &meshB;
         recompute();
         m_isVisible = true; // Opens/unhides the window
     }
 
-    void recompute() {
-        if (!m_cachedMeshA && !m_cachedMeshB) return;
+    void recompute()
+    {
+        if (!m_cachedMeshA && !m_cachedMeshB)
+            return;
 
         // Pre-pass lambda to compute degeneracy stats across a mesh
-        auto computeStats = [](const Mesh* mesh) -> LocalStats {
+        auto computeStats = [](const Mesh *mesh) -> LocalStats
+        {
             LocalStats s;
-            if (!mesh) return s;
+            if (!mesh)
+                return s;
             size_t nFaces = num_faces(*mesh);
-            if (nFaces == 0) return s;
+            if (nFaces == 0)
+                return s;
 
             auto coords = mesh->points();
 
-            struct ReductionPass {
+            struct ReductionPass
+            {
                 double minLength = std::numeric_limits<double>::infinity();
                 double maxLength = -1.0;
                 double totalLength = 0.0;
@@ -128,10 +142,13 @@ public:
 
             ReductionPass pass = tbb::parallel_reduce(
                 tbb::blocked_range<size_t>(0, nFaces), ReductionPass(),
-                [&](const tbb::blocked_range<size_t>& r, ReductionPass local) {
-                    for (size_t i = r.begin(); i != r.end(); ++i) {
+                [&](const tbb::blocked_range<size_t> &r, ReductionPass local)
+                {
+                    for (size_t i = r.begin(); i != r.end(); ++i)
+                    {
                         typename Mesh::Face_index f(static_cast<typename Mesh::size_type>(i));
-                        if (mesh->is_removed(f)) continue;
+                        if (mesh->is_removed(f))
+                            continue;
 
                         auto h0 = mesh->halfedge(f);
                         auto h1 = mesh->next(h0);
@@ -141,10 +158,15 @@ public:
                         auto p1 = coords[mesh->target(h1)];
                         auto p2 = coords[mesh->target(h2)];
 
-                        double dx0 = p1.x() - p0.x(), dy0 = p1.y() - p0.y(), dz0 = p1.z() - p0.z();
-                        double dx1 = p2.x() - p0.x(), dy1 = p2.y() - p0.y(), dz1 = p2.z() - p0.z();
+                        double dx0 = CGAL::to_double(p1.x()) - CGAL::to_double(p0.x()), 
+                               dy0 = CGAL::to_double(p1.y()) - CGAL::to_double(p0.y()), 
+                               dz0 = CGAL::to_double(p1.z()) - CGAL::to_double(p0.z());
+                        double dx1 = CGAL::to_double(p2.x()) - CGAL::to_double(p0.x()), 
+                               dy1 = CGAL::to_double(p2.y()) - CGAL::to_double(p0.y()), 
+                               dz1 = CGAL::to_double(p2.z()) - CGAL::to_double(p0.z());
 
                         double q = computeTriangleQuality(dx0, dy0, dz0, dx1, dy1, dz1);
+
 
                         local.minLength = std::min(local.minLength, q);
                         local.maxLength = std::max(local.maxLength, q);
@@ -153,14 +175,14 @@ public:
                     }
                     return local;
                 },
-                [](ReductionPass a, const ReductionPass& b) {
+                [](ReductionPass a, const ReductionPass &b)
+                {
                     a.minLength = std::min(a.minLength, b.minLength);
                     a.maxLength = std::max(a.maxLength, b.maxLength);
                     a.totalLength += b.totalLength;
                     a.validEdges += b.validEdges;
                     return a;
-                }
-            );
+                });
 
             s.minLen = pass.minLength;
             s.maxLen = pass.maxLength;
@@ -177,13 +199,16 @@ public:
         m_globalMaxLength = std::max(statsA.maxLen, statsB.maxLen);
 
         // Fallback bounds clamp
-        if (m_globalMinLength >= m_globalMaxLength) {
+        if (m_globalMinLength >= m_globalMaxLength)
+        {
             m_globalMaxLength = m_globalMinLength + 1e-4;
         }
 
         // Bin both meshes using exact same global range
-        if (m_cachedMeshA) m_dataA = computeHistogram(*m_cachedMeshA, "Mesh A", statsA);
-        if (m_cachedMeshB) m_dataB = computeHistogram(*m_cachedMeshB, "Mesh B", statsB);
+        if (m_cachedMeshA)
+            m_dataA = computeHistogram(*m_cachedMeshA, "Mesh A", statsA);
+        if (m_cachedMeshB)
+            m_dataB = computeHistogram(*m_cachedMeshB, "Mesh B", statsB);
     }
 
     void show() { m_isVisible = true; }
@@ -191,10 +216,12 @@ public:
     bool isVisible() const { return m_isVisible; }
 
 private:
-    HistogramData computeHistogram(const Mesh& mesh, const std::string& name, const LocalStats& stats) {
+    HistogramData computeHistogram(const Mesh &mesh, const std::string &name, const LocalStats &stats)
+    {
         HistogramData data;
         data.meshName = name;
-        if (!stats.valid) return data;
+        if (!stats.valid)
+            return data;
 
         size_t bins = static_cast<size_t>(std::max(1, m_numBins));
 
@@ -215,14 +242,19 @@ private:
         double logMax = std::log10(std::max(m_globalMaxLength, safeMinLen + 1e-8));
         double logRange = logMax - logMin;
 
-        if (m_useLogScale) {
+        if (m_useLogScale)
+        {
             double logStep = logRange / static_cast<double>(bins);
-            for (size_t i = 0; i <= bins; ++i) {
+            for (size_t i = 0; i <= bins; ++i)
+            {
                 data.binEdges[i] = std::pow(10.0, logMin + static_cast<double>(i) * logStep);
             }
-        } else {
+        }
+        else
+        {
             double binWidth = globalDiff / static_cast<double>(bins);
-            for (size_t i = 0; i <= bins; ++i) {
+            for (size_t i = 0; i <= bins; ++i)
+            {
                 data.binEdges[i] = m_globalMinLength + static_cast<double>(i) * binWidth;
             }
         }
@@ -233,7 +265,8 @@ private:
         // Parallel Face Quality Bin Classification
         tbb::concurrent_vector<size_t> localBins(bins, 0);
 
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, nFaces), [&](const tbb::blocked_range<size_t>& r) {
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, nFaces), [&](const tbb::blocked_range<size_t> &r)
+                          {
             for (size_t i = r.begin(); i != r.end(); ++i) {
                 typename Mesh::Face_index f(static_cast<typename Mesh::size_type>(i));
                 if (mesh.is_removed(f)) continue;
@@ -246,8 +279,12 @@ private:
                 auto p1 = coords[mesh.target(h1)];
                 auto p2 = coords[mesh.target(h2)];
 
-                double dx0 = p1.x() - p0.x(), dy0 = p1.y() - p0.y(), dz0 = p1.z() - p0.z();
-                double dx1 = p2.x() - p0.x(), dy1 = p2.y() - p0.y(), dz1 = p2.z() - p0.z();
+                double dx0 = CGAL::to_double(p1.x()) - CGAL::to_double(p0.x()), 
+                dy0 = CGAL::to_double(p1.y()) - CGAL::to_double(p0.y()), 
+                dz0 = CGAL::to_double(p1.z()) - CGAL::to_double(p0.z());
+                double dx1 = CGAL::to_double(p2.x()) - CGAL::to_double(p0.x()), 
+                dy1 = CGAL::to_double(p2.y()) - CGAL::to_double(p0.y()), 
+                dz1 = CGAL::to_double(p2.z()) - CGAL::to_double(p0.z());
 
                 double q = computeTriangleQuality(dx0, dy0, dz0, dx1, dy1, dz1);
 
@@ -261,10 +298,10 @@ private:
 
                 idx = std::clamp(idx, 0, static_cast<int>(bins - 1));
                 localBins[idx]++;
-            }
-        });
+            } });
 
-        for (size_t i = 0; i < bins; ++i) {
+        for (size_t i = 0; i < bins; ++i)
+        {
             data.binCounts[i] = static_cast<float>(localBins[i]);
         }
 
@@ -272,31 +309,37 @@ private:
         return data;
     }
 
-    void renderUI() {
-        if (!m_isVisible) return;
+    void renderUI()
+    {
+        if (!m_isVisible)
+            return;
 
         ImGui::SetNextWindowSize(ImVec2(580, 560), ImGuiCond_FirstUseEver);
 
-        if (ImGui::Begin("Triangle Degeneracy Distribution", &m_isVisible, ImGuiWindowFlags_NoCollapse)) {
+        if (ImGui::Begin("Triangle Degeneracy Distribution", &m_isVisible, ImGuiWindowFlags_NoCollapse))
+        {
 
             // Shared Axis Overview
             ImGui::Text("Shared Quality (Q) Bounds (0=Degenerate, 1=Equilateral):");
             ImGui::TextDisabled("Global Min Q: %.4e | Global Max Q: %.4e", m_globalMinLength, m_globalMaxLength);
-            
+
             ImGui::Separator();
 
             // Controls Toolbar
             ImGui::Text("Histogram Settings:");
             ImGui::SetNextItemWidth(160.0f);
-            if (ImGui::SliderInt("Bins", &m_numBins, 5, 100)) {
+            if (ImGui::SliderInt("Bins", &m_numBins, 5, 100))
+            {
                 recompute();
             }
             ImGui::SameLine();
-            if (ImGui::Checkbox("Log Scale", &m_useLogScale)) {
+            if (ImGui::Checkbox("Log Scale", &m_useLogScale))
+            {
                 recompute();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Reset")) {
+            if (ImGui::Button("Reset"))
+            {
                 m_numBins = 25;
                 m_useLogScale = false;
                 recompute();
@@ -311,8 +354,10 @@ private:
         ImGui::End();
     }
 
-    void renderMeshSection(const HistogramData& d) {
-        if (!d.isValid) {
+    void renderMeshSection(const HistogramData &d)
+    {
+        if (!d.isValid)
+        {
             ImGui::Text("%s: No geometry data available.", d.meshName.c_str());
             return;
         }
@@ -341,8 +386,7 @@ private:
             nullptr,
             0.0f,
             maxCount * 1.05f,
-            canvasSize
-        );
+            canvasSize);
 
         // Overlay Invisible Button for reliable hover & mouse calculation
         ImGui::SetCursorScreenPos(startPos);
@@ -350,7 +394,8 @@ private:
         ImGui::InvisibleButton(btnId.c_str(), canvasSize);
 
         // Interactive Hover Tooltip detailing exact bin range
-        if (ImGui::IsItemHovered() && d.binCounts.size() > 0 && d.binEdges.size() > d.binCounts.size()) {
+        if (ImGui::IsItemHovered() && d.binCounts.size() > 0 && d.binEdges.size() > d.binCounts.size())
+        {
             ImVec2 mousePos = ImGui::GetMousePos();
 
             float hoverRelX = (mousePos.x - startPos.x) / canvasSize.x;

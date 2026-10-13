@@ -139,7 +139,7 @@ BoundingBox3D computeMeshAABBParallel(const Mesh &mesh)
         {
           typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
           const auto &p = coords[v];
-          box.expandByPoint(p.x(), p.y(), p.z());
+          box.expandByPoint(CGAL::to_double(p.x()), CGAL::to_double(p.y()), CGAL::to_double(p.z()));
         }
         return box;
       },
@@ -168,9 +168,9 @@ void normalizeMeshCoordinatesParallel(Mesh &mesh, double cx, double cy, double c
     for(size_t i = r.begin(); i != r.end(); ++i) {
       typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
       const auto& p = coords[v];
-      double nx = (p.x() - cx) * scaleFactor;
-      double ny = (p.y() - cy) * scaleFactor;
-      double nz = (p.z() - cz) * scaleFactor;
+      double nx = (CGAL::to_double(p.x()) - cx) * scaleFactor;
+double ny = (CGAL::to_double(p.y()) - cy) * scaleFactor;
+double nz = (CGAL::to_double(p.z()) - cz) * scaleFactor;
       coords[v] = Point3(nx, ny, nz);
     } });
 }
@@ -410,7 +410,11 @@ void extractVertexCoordinatesParallel(const Mesh &mesh, std::vector<double3> &ou
     for(size_t i = r.begin(); i != r.end(); ++i) {
       typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
       const auto& p = coords[v];
-      outVerts[i] = make_double3(p.x(), p.y(), p.z());
+      outVerts[i] = make_double3(
+          CGAL::to_double(p.x()), 
+          CGAL::to_double(p.y()), 
+          CGAL::to_double(p.z())
+      );
     } });
 }
 
@@ -433,7 +437,7 @@ bool loadMeshOffSequential(const std::string &filepath,
   {
     typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
     const auto &p = coords[v];
-    outVerts[i] = make_double3(p.x(), p.y(), p.z());
+    outVerts[i] = make_double3(CGAL::to_double(p.x()), CGAL::to_double(p.y()), CGAL::to_double(p.z()));
   }
 
   size_t numFaces = num_faces(mesh);
@@ -636,7 +640,6 @@ void executeMeshIntersectionPipeline(ApplicationState &app,
                                   make_double3(rotB.x, rotB.y, rotB.z), make_double3(transB.x, transB.y, transB.z),
                                   tGPU, tCPU, tTV, tAT, tGB);
 
-  
   int2 *outIntersectionPairs = nullptr;
   size_t outFinalCount = 0;
 
@@ -646,7 +649,6 @@ void executeMeshIntersectionPipeline(ApplicationState &app,
   auto tEnd = std::chrono::high_resolution_clock::now();
   app.timingVisualizer.updateAndShowCompute(app.stats);
 
-  
   double elapsedMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
 
   std::vector<int2> stdPairs;
@@ -1441,10 +1443,10 @@ int main(int argc, char **argv)
   ui.registerAlias("cgalp", "ComputeCGALParallel");
 
   ui.registerCommand("testConfig",
-                   "[steps] [trans|auto[:ratio]] [rotDeg] [precision] [dualTreeSteps] [queryLvl] [refLvl] [batch] [seed] [csvPath]",
-                   "Displays or updates test parameters. Supports 'auto' or 'auto:0.15' for dynamic translation scaling.",
-                   [&](std::istringstream &iss)
-                   { cmdTestConfig(app, iss); });
+                     "[steps] [trans|auto[:ratio]] [rotDeg] [precision] [dualTreeSteps] [queryLvl] [refLvl] [batch] [seed] [csvPath]",
+                     "Displays or updates test parameters. Supports 'auto' or 'auto:0.15' for dynamic translation scaling.",
+                     [&](std::istringstream &iss)
+                     { cmdTestConfig(app, iss); });
 
   ui.registerCommand("runSuite", "", "Executes automated test suite sweep with active TestConfig parameters.",
                      [&](std::istringstream &)

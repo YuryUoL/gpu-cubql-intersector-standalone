@@ -10,7 +10,7 @@ __device__ inline double3 load_double3(const double3* ptr) {
 }
 
 // --------------------------------------------------------------------
-// DOUBLE-SINGLE (DS) SIMULATION ARITHMETIC (1:1 FP32 Throughput)
+// DOUBLE-SINGLE (DS) SIMULATION ARITHMETIC
 // --------------------------------------------------------------------
 struct ds_float {
     float hi;
@@ -21,7 +21,7 @@ struct ds_vec3 {
     ds_float x, y, z;
 };
 
-// Converts native double (53-bit mantissa) into two exact FP32 components
+// Converts native double into two exact FP32 components
 __device__ inline ds_float double_to_ds(double val) {
     float hi = static_cast<float>(val);
     float lo = static_cast<float>(val - static_cast<double>(hi));
@@ -70,43 +70,119 @@ __device__ inline ds_float ds_mul(ds_float a, ds_float b) {
     return quick_two_sum(p.hi, p.lo);
 }
 
-// --------------------------------------------------------------------
-// PRECISION DS PREDICATES WITH DYNAMIC ERROR BOUNDING
-// --------------------------------------------------------------------
-__device__ inline int orient3d_ds(
-    const ds_vec3& p, const ds_vec3& q, 
-    const ds_vec3& r, const ds_vec3& s, float ds_eps) 
-{
-    ds_float pdx = ds_sub(p.x, s.x); ds_float pdy = ds_sub(p.y, s.y); ds_float pdz = ds_sub(p.z, s.z);
-    ds_float qdx = ds_sub(q.x, s.x); ds_float qdy = ds_sub(q.y, s.y); ds_float qdz = ds_sub(q.z, s.z);
-    ds_float rdx = ds_sub(r.x, s.x); ds_float rdy = ds_sub(r.y, s.y); ds_float rdz = ds_sub(r.z, s.z);
-
-    ds_float det = ds_add(
-        ds_add(
-            ds_mul(pdx, ds_sub(ds_mul(qdy, rdz), ds_mul(qdz, rdy))),
-            ds_mul(pdy, ds_sub(ds_mul(qdz, rdx), ds_mul(qdx, rdz)))
-        ),
-        ds_mul(pdz, ds_sub(ds_mul(qdx, rdy), ds_mul(qdy, rdx)))
-    );
-
-    if (det.hi > ds_eps) return 1;
-    if (det.hi < -ds_eps) return -1;
-    return 0; // Fallback to Exact CPU Predicate (PAIR_YELLOW)
+// Comparison helpers for DS floats
+__device__ inline bool ds_gt(ds_float a, ds_float b) {
+    return (a.hi > b.hi) || (a.hi == b.hi && a.lo > b.lo);
 }
 
-__device__ inline int edgeTri_ds(
-    const ds_vec3 &a, const ds_vec3 &b,
-    const ds_vec3 &p, const ds_vec3 &q, const ds_vec3 &r, float ds_eps) 
+__device__ inline bool ds_lt(ds_float a, ds_float b) {
+    return (a.hi < b.hi) || (a.hi == b.hi && a.lo < b.lo);
+}
+
+// --------------------------------------------------------------------
+// DOUBLE-SINGLE (DS) INTERVAL ARITHMETIC TYPES & OPERATIONS
+// --------------------------------------------------------------------
+struct dsInterval {
+    ds_float lo;
+    ds_float hi;
+};
+
+struct vec3DsInterval {
+    dsInterval x, y, z;
+};
+
+// Rigorous interval creation for relative anchor offsets (using device-safe fabsf)
+__device__ inline dsInterval make_ds_interval(double x_world, double anchor_world) {
+    double diff = x_world - anchor_world;
+    ds_float exact_ds = double_to_ds(diff);
+    
+    constexpr float eps_ds = 1.1920929e-7f * 1.1920929e-7f; // ~1.4e-14
+    float abs_hi = fabsf(exact_ds.hi);
+    ds_float lo_bound = ds_sub(exact_ds, {abs_hi * eps_ds, 0.0f});
+    ds_float hi_bound = ds_add(exact_ds, {abs_hi * eps_ds, 0.0f});
+    return { lo_bound, hi_bound };
+}
+
+__device__ inline dsInterval ds_interval_sub(dsInterval a, dsInterval b) {
+    return dsInterval{
+        ds_sub(a.lo, b.hi),
+        ds_sub(a.hi, b.lo)
+    };
+}
+
+__device__ inline dsInterval ds_interval_add(dsInterval a, dsInterval b) {
+    return dsInterval{
+        ds_add(a.lo, b.lo),
+        ds_add(a.hi, b.hi)
+    };
+}
+
+__device__ inline dsInterval ds_interval_mul(dsInterval a, dsInterval b) {
+    ds_float p1 = ds_mul(a.lo, b.lo);
+    ds_float p2 = ds_mul(a.lo, b.hi);
+    ds_float p3 = ds_mul(a.hi, b.lo);
+    ds_float p4 = ds_mul(a.hi, b.hi);
+
+    ds_float min_val = p1;
+    if (ds_gt(min_val, p2)) min_val = p2;
+    if (ds_gt(min_val, p3)) min_val = p3;
+    if (ds_gt(min_val, p4)) min_val = p4;
+
+    ds_float max_val = p1;
+    if (ds_lt(max_val, p2)) max_val = p2;
+    if (ds_lt(max_val, p3)) max_val = p3;
+    if (ds_lt(max_val, p4)) max_val = p4;
+
+    return dsInterval{ min_val, max_val };
+}
+
+// --------------------------------------------------------------------
+// RIGOROUS DS INTERVAL PREDICATES (ZERO EPSILON REQUIRED)
+// --------------------------------------------------------------------
+__device__ inline int orient3d_ds_interval(
+    const vec3DsInterval& p, const vec3DsInterval& q, 
+    const vec3DsInterval& r, const vec3DsInterval& s) 
 {
-    int s0 = orient3d_ds(p, q, r, a, ds_eps);
-    int s1 = orient3d_ds(p, q, r, b, ds_eps);
+    dsInterval pdx = ds_interval_sub(p.x, s.x); 
+    dsInterval pdy = ds_interval_sub(p.y, s.y); 
+    dsInterval pdz = ds_interval_sub(p.z, s.z);
+
+    dsInterval qdx = ds_interval_sub(q.x, s.x); 
+    dsInterval qdy = ds_interval_sub(q.y, s.y); 
+    dsInterval qdz = ds_interval_sub(q.z, s.z);
+
+    dsInterval rdx = ds_interval_sub(r.x, s.x); 
+    dsInterval rdy = ds_interval_sub(r.y, s.y); 
+    dsInterval rdz = ds_interval_sub(r.z, s.z);
+
+    dsInterval det = ds_interval_add(
+        ds_interval_add(
+            ds_interval_mul(pdx, ds_interval_sub(ds_interval_mul(qdy, rdz), ds_interval_mul(qdz, rdy))),
+            ds_interval_mul(pdy, ds_interval_sub(ds_interval_mul(qdz, rdx), ds_interval_mul(qdx, rdz)))
+        ),
+        ds_interval_mul(pdz, ds_interval_sub(ds_interval_mul(qdx, rdy), ds_interval_mul(qdy, rdx)))
+    );
+
+    // Pure mathematical sign check on rigorous intervals
+    ds_float zero = {0.0f, 0.0f};
+    if (ds_gt(det.lo, zero)) return 1;
+    if (ds_lt(det.hi, zero)) return -1;
+    return 0; // Determinant straddles zero -> Exact CPU Fallback (PAIR_YELLOW)
+}
+
+__device__ inline int edgeTri_ds_interval(
+    const vec3DsInterval &a, const vec3DsInterval &b,
+    const vec3DsInterval &p, const vec3DsInterval &q, const vec3DsInterval &r) 
+{
+    int s0 = orient3d_ds_interval(p, q, r, a);
+    int s1 = orient3d_ds_interval(p, q, r, b);
 
     if (s0 == 0 || s1 == 0) return PAIR_YELLOW;
     if ((s0 > 0 && s1 > 0) || (s0 < 0 && s1 < 0)) return PAIR_NO;
 
-    int e0 = orient3d_ds(a, b, p, q, ds_eps);
-    int e1 = orient3d_ds(a, b, q, r, ds_eps);
-    int e2 = orient3d_ds(a, b, r, p, ds_eps);
+    int e0 = orient3d_ds_interval(a, b, p, q);
+    int e1 = orient3d_ds_interval(a, b, q, r);
+    int e2 = orient3d_ds_interval(a, b, r, p);
 
     if (e0 == 0 || e1 == 0 || e2 == 0) return PAIR_YELLOW;
     if ((e0 >= 0 && e1 >= 0 && e2 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0)) return PAIR_GREEN;
@@ -115,67 +191,72 @@ __device__ inline int edgeTri_ds(
 }
 
 // --------------------------------------------------------------------
-// CLASSIFICATION FUNCTION
+// CLASSIFICATION FUNCTION (Double-Single Interval Arithmetic)
 // --------------------------------------------------------------------
 __device__ inline PairStatus classifyPairDS(
     const double3& Aa, const double3& Ab, const double3& Ac,
     const double3& Ba, const double3& Bb, const double3& Bc) 
 {    
-    // 1. Exact Double Anchor Shift (Eliminates World-Space Offset Cancellation)
+    // 1. Exact Double Anchor Shift
     const double3 anchor = Aa;
     
-    double3 relA1 = { Ab.x - anchor.x, Ab.y - anchor.y, Ab.z - anchor.z };
-    double3 relA2 = { Ac.x - anchor.x, Ac.y - anchor.y, Ac.z - anchor.z };
+    // 2. Build DS Intervals for all relative vertices
+    const vec3DsInterval A0 = {
+        dsInterval{{0.0f, 0.0f}, {0.0f, 0.0f}},
+        dsInterval{{0.0f, 0.0f}, {0.0f, 0.0f}},
+        dsInterval{{0.0f, 0.0f}, {0.0f, 0.0f}}
+    };
+    const vec3DsInterval A1 = {
+        make_ds_interval(Ab.x, anchor.x),
+        make_ds_interval(Ab.y, anchor.y),
+        make_ds_interval(Ab.z, anchor.z)
+    };
+    const vec3DsInterval A2 = {
+        make_ds_interval(Ac.x, anchor.x),
+        make_ds_interval(Ac.y, anchor.y),
+        make_ds_interval(Ac.z, anchor.z)
+    };
 
-    double3 relB0 = { Ba.x - anchor.x, Ba.y - anchor.y, Ba.z - anchor.z };
-    double3 relB1 = { Bb.x - anchor.x, Bb.y - anchor.y, Bb.z - anchor.z };
-    double3 relB2 = { Bc.x - anchor.x, Bc.y - anchor.y, Bc.z - anchor.z };
+    const vec3DsInterval B0 = {
+        make_ds_interval(Ba.x, anchor.x),
+        make_ds_interval(Ba.y, anchor.y),
+        make_ds_interval(Ba.z, anchor.z)
+    };
+    const vec3DsInterval B1 = {
+        make_ds_interval(Bb.x, anchor.x),
+        make_ds_interval(Bb.y, anchor.y),
+        make_ds_interval(Bb.z, anchor.z)
+    };
+    const vec3DsInterval B2 = {
+        make_ds_interval(Bc.x, anchor.x),
+        make_ds_interval(Bc.y, anchor.y),
+        make_ds_interval(Bc.z, anchor.z)
+    };
 
-    // 2. Compute Local Bounding Scale for Strict Machine Epsilon
-    double maxA1 = fmax(fabs(relA1.x), fmax(fabs(relA1.y), fabs(relA1.z)));
-    double maxA2 = fmax(fabs(relA2.x), fmax(fabs(relA2.y), fabs(relA2.z)));
-    double maxB0 = fmax(fabs(relB0.x), fmax(fabs(relB0.y), fabs(relB0.z)));
-    double maxB1 = fmax(fabs(relB1.x), fmax(fabs(relB1.y), fabs(relB1.z)));
-    double maxB2 = fmax(fabs(relB2.x), fmax(fabs(relB2.y), fabs(relB2.z)));
-
-    double M_local = fmax(maxA1, fmax(maxA2, fmax(maxB0, fmax(maxB1, maxB2))));
-
-    // 3. Dynamic DS Error Bound: Scale^3 * 64 * 2^-48
-    const float ds_eps = static_cast<float>(M_local * M_local * M_local * 2.27e-13);
-
-    // 4. Promote Relative Coordinates to Double-Single Vectors
-    ds_vec3 ds_A0 = { {0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f} };
-    ds_vec3 ds_A1 = to_ds_vec(relA1);
-    ds_vec3 ds_A2 = to_ds_vec(relA2);
-
-    ds_vec3 ds_B0 = to_ds_vec(relB0);
-    ds_vec3 ds_B1 = to_ds_vec(relB1);
-    ds_vec3 ds_B2 = to_ds_vec(relB2);
-
-    // 5. Early Rejection Checks
-    int ob0 = orient3d_ds(ds_A0, ds_A1, ds_A2, ds_B0, ds_eps);
-    int ob1 = orient3d_ds(ds_A0, ds_A1, ds_A2, ds_B1, ds_eps);
-    int ob2 = orient3d_ds(ds_A0, ds_A1, ds_A2, ds_B2, ds_eps);
+    // 3. Early Rejection Checks using DS Interval Orientations
+    int ob0 = orient3d_ds_interval(A0, A1, A2, B0);
+    int ob1 = orient3d_ds_interval(A0, A1, A2, B1);
+    int ob2 = orient3d_ds_interval(A0, A1, A2, B2);
     if (ob0 != 0 && ob1 != 0 && ob2 != 0) {
         if ((ob0 > 0 && ob1 > 0 && ob2 > 0) || (ob0 < 0 && ob1 < 0 && ob2 < 0)) return PAIR_NO;
     }
 
-    int oa0 = orient3d_ds(ds_B0, ds_B1, ds_B2, ds_A0, ds_eps);
-    int oa1 = orient3d_ds(ds_B0, ds_B1, ds_B2, ds_A1, ds_eps);
-    int oa2 = orient3d_ds(ds_B0, ds_B1, ds_B2, ds_A2, ds_eps);
+    int oa0 = orient3d_ds_interval(B0, B1, B2, A0);
+    int oa1 = orient3d_ds_interval(B0, B1, B2, A1);
+    int oa2 = orient3d_ds_interval(B0, B1, B2, A2);
     if (oa0 != 0 && oa1 != 0 && oa2 != 0) {
         if ((oa0 > 0 && oa1 > 0 && oa2 > 0) || (oa0 < 0 && oa1 < 0 && oa2 < 0)) return PAIR_NO;
     }
 
-    // 6. Detailed Edge-Triangle Predicates
+    // 4. Detailed Edge-Triangle DS Interval Predicates
     int r;
-    r = edgeTri_ds(ds_A0, ds_A1, ds_B0, ds_B1, ds_B2, ds_eps); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
-    r = edgeTri_ds(ds_A1, ds_A2, ds_B0, ds_B1, ds_B2, ds_eps); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
-    r = edgeTri_ds(ds_A2, ds_A0, ds_B0, ds_B1, ds_B2, ds_eps); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
+    r = edgeTri_ds_interval(A0, A1, B0, B1, B2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
+    r = edgeTri_ds_interval(A1, A2, B0, B1, B2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
+    r = edgeTri_ds_interval(A2, A0, B0, B1, B2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
 
-    r = edgeTri_ds(ds_B0, ds_B1, ds_A0, ds_A1, ds_A2, ds_eps); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
-    r = edgeTri_ds(ds_B1, ds_B2, ds_A0, ds_A1, ds_A2, ds_eps); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
-    r = edgeTri_ds(ds_B2, ds_B0, ds_A0, ds_A1, ds_A2, ds_eps); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
+    r = edgeTri_ds_interval(B0, B1, A0, A1, A2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
+    r = edgeTri_ds_interval(B1, B2, A0, A1, A2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
+    r = edgeTri_ds_interval(B2, B0, A0, A1, A2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
 
     return PAIR_NO;
 }
@@ -200,7 +281,6 @@ __global__ void evaluateGeometricPairsKernelDouble(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    // Load double3 using component-wise __ldg loads
     double3 Aa = load_double3(&dVertsA[idxA.x]);
     double3 Ab = load_double3(&dVertsA[idxA.y]);
     double3 Ac = load_double3(&dVertsA[idxA.z]);

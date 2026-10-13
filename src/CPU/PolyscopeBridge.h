@@ -135,7 +135,11 @@ registerCgalMesh(const std::string& name, const Mesh& cgalMesh, glm::vec3 color 
     for(size_t i = r.begin(); i != r.end(); ++i) {
       typename Mesh::Vertex_index v(static_cast<typename Mesh::size_type>(i));
       const auto& p = coords[v];
-      points[i] = glm::vec3(static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z()));
+      points[i] = glm::vec3(
+          static_cast<float>(CGAL::to_double(p.x())), 
+          static_cast<float>(CGAL::to_double(p.y())), 
+          static_cast<float>(CGAL::to_double(p.z()))
+      );
     }
   });
 

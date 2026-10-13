@@ -112,11 +112,11 @@ extern "C" void runGridForestIntersectionPipeline(Mesh& meshA,
   // 2. WORLD-SPACE VERTEX TRANSFORMATIONS & AABB GENERATION
   // ============================================================================
   const Mat3x3 rotMatrixA = makeRotationMatrixDeg(rotA.x, rotA.y, rotA.z);
-  const double3 centerPosA = make_double3(centerA.x(), centerA.y(), centerA.z());
+  const double3 centerPosA = make_double3(CGAL::to_double(centerA.x()), CGAL::to_double(centerA.y()), CGAL::to_double(centerA.z()));
   launchTransformVertices(d_vertsA, d_vertsA, numVertsA, rotMatrixA, centerPosA, transA, stream);
 
   const Mat3x3 rotMatrixB = makeRotationMatrixDeg(rotB.x, rotB.y, rotB.z);
-  const double3 centerPosB = make_double3(centerB.x(), centerB.y(), centerB.z());
+  const double3 centerPosB = make_double3(CGAL::to_double(centerB.x()), CGAL::to_double(centerB.y()), CGAL::to_double(centerB.z()));
   launchTransformVertices(d_vertsB, d_vertsB, numVertsB, rotMatrixB, centerPosB, transB, stream);
 
   cuBQL::box3f* d_boxesA = nullptr;
