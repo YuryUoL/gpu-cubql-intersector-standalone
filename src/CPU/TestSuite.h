@@ -71,13 +71,13 @@ private:
         const TestConfig& config);
 
     std::vector<int2> runCGALClassicGroundTruth(
-        const double3& rotA, const double3& transA,
-        const double3& rotB, const double3& transB,
+        const Mesh& meshA_transformed,
+        const Mesh& meshB_transformed,
         double& outTimeMs);
 
     std::vector<int2> runCGALParallel(
-        const double3& rotA, const double3& transA,
-        const double3& rotB, const double3& transB,
+        const Mesh& meshA_transformed,
+        const Mesh& meshB_transformed,
         double& outTimeMs);
 
     std::vector<int2> runMainGPUPipeline(
@@ -89,8 +89,8 @@ private:
         ExecutionStats& outStats);
 
     std::vector<int2> runStandalonePipeline(
-        const double3& rotA, const double3& transA,
-        const double3& rotB, const double3& transB,
+        Mesh& meshA_transformed, // Removed const
+        Mesh& meshB_transformed, // Removed const
         const TestConfig& config,
         double& outTimeMs,
         size_t& outCandidates,

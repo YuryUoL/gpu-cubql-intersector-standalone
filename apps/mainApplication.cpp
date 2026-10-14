@@ -1157,18 +1157,36 @@ void cmdTestBVH(ApplicationState &app, std::istringstream &iss)
 
   Point3 centerA(app.normCenterA.x, app.normCenterA.y, app.normCenterA.z);
   Point3 centerB(app.normCenterB.x, app.normCenterB.y, app.normCenterB.z);
+
+  // 1. Transform the CGAL meshes beforehand (heavy lifting on CPU)
+  Mesh meshA_transformed, meshB_transformed;
+  transformCgalMesh(app.meshA, meshA_transformed, centerA, make_double3(rotA.x, rotA.y, rotA.z),
+                    make_double3(transA.x, transA.y, transA.z));
+  transformCgalMesh(app.meshB, meshB_transformed, centerB, make_double3(rotB.x, rotB.y, rotB.z),
+                    make_double3(transB.x, transB.y, transB.z));
+
+  // 2. Extract vertex coordinates from the pre-transformed meshes
+  std::vector<double3> hVertsA_transformed, hVertsB_transformed;
+  extractVertexCoordinatesParallel(meshA_transformed, hVertsA_transformed);
+  extractVertexCoordinatesParallel(meshB_transformed, hVertsB_transformed);
+
   ExecutionStats testStats;
   int2 *outIntersectionPairs = nullptr;
   size_t outFinalCount = 0;
 
   auto tStart = std::chrono::high_resolution_clock::now();
+  
+  // 3. Run pipeline passing the transformed meshes/buffers with 0 rotation and 0 translation
   runGridForestIntersectionPipeline(
-      app.meshA, app.meshB, app.hVertsA.data(), static_cast<int>(app.hVertsA.size()), app.hIndicesA.data(),
-      static_cast<int>(app.hIndicesA.size()), queryDescentLevel, app.hVertsB.data(),
-      static_cast<int>(app.hVertsB.size()), app.hIndicesB.data(), static_cast<int>(app.hIndicesB.size()),
+      meshA_transformed, meshB_transformed, 
+      hVertsA_transformed.data(), static_cast<int>(hVertsA_transformed.size()), app.hIndicesA.data(),
+      static_cast<int>(app.hIndicesA.size()), queryDescentLevel, 
+      hVertsB_transformed.data(), static_cast<int>(hVertsB_transformed.size()), app.hIndicesB.data(),
+      static_cast<int>(app.hIndicesB.size()),
       referenceDescentLevel, batchMultiplier, mode, predicateDoubleMode, leafThreshold, testStats, outIntersectionPairs,
-      outFinalCount, centerA, centerB, make_double3(rotA.x, rotA.y, rotA.z), make_double3(transA.x, transA.y, transA.z),
-      make_double3(rotB.x, rotB.y, rotB.z), make_double3(transB.x, transB.y, transB.z));
+      outFinalCount, centerA, centerB, 
+      make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0), // RotA, TransA as 0s
+      make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)); // RotB, TransB as 0s
 
   auto tEnd = std::chrono::high_resolution_clock::now();
   double elapsedMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();

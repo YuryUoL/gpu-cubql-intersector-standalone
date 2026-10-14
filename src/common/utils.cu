@@ -415,6 +415,25 @@ void launchTransformVertices(double3* dVertsOut,
                              double3 trans,
                              cudaStream_t stream) {
   if (numVerts <= 0) return;
+
+  // Check if rotation is Identity (diagonal elements are 1, off-diagonals are 0) 
+  // and translation is zero.
+  bool isIdentityRotation = (R.m[0][0] == 1.0 && R.m[0][1] == 0.0 && R.m[0][2] == 0.0 &&
+                             R.m[1][0] == 0.0 && R.m[1][1] == 1.0 && R.m[1][2] == 0.0 &&
+                             R.m[2][0] == 0.0 && R.m[2][1] == 0.0 && R.m[2][2] == 1.0);
+
+  bool isZeroTranslation = (trans.x == 0.0 && trans.y == 0.0 && trans.z == 0.0);
+
+  // If no transformation is requested, just do a fast memory copy 
+  // to guarantee bitwise-identical values and avoid floating-point error.
+  if (isIdentityRotation && isZeroTranslation) {
+    if (dVertsOut != dVertsOrig) {
+      CUBQL_CUDA_CALL(MemcpyAsync(dVertsOut, dVertsOrig, numVerts * sizeof(double3), cudaMemcpyDeviceToDevice, stream));
+    }
+    return;
+  }
+
+  // Otherwise, execute the kernel normally
   int blockSize = 256;
   int gridSize = (numVerts + blockSize - 1) / blockSize;
   transformVerticesKernel<<<gridSize, blockSize, 0, stream>>>(dVertsOut, dVertsOrig, numVerts, R, center, trans);

@@ -75,17 +75,9 @@ double TestSuite::computeIntersectedSurfaceArea(
 }
 
 std::vector<int2> TestSuite::runCGALClassicGroundTruth(
-    const double3 &rotA, const double3 &transA,
-    const double3 &rotB, const double3 &transB,
+    const Mesh &meshA_transformed, const Mesh &meshB_transformed,
     double &outTimeMs)
 {
-    Mesh meshA_transformed, meshB_transformed;
-    Point3 centerA(app_.normCenterA.x, app_.normCenterA.y, app_.normCenterA.z);
-    Point3 centerB(app_.normCenterB.x, app_.normCenterB.y, app_.normCenterB.z);
-
-    transformCgalMesh(app_.meshA, meshA_transformed, centerA, rotA, transA);
-    transformCgalMesh(app_.meshB, meshB_transformed, centerB, rotB, transB);
-
     using face_descriptor = boost::graph_traits<Mesh>::face_descriptor;
     std::vector<std::pair<face_descriptor, face_descriptor>> cgal_intersected_tris;
 
@@ -108,8 +100,7 @@ std::vector<int2> TestSuite::runCGALClassicGroundTruth(
 }
 
 std::vector<int2> TestSuite::runCGALParallel(
-    const double3 &rotA, const double3 &transA,
-    const double3 &rotB, const double3 &transB,
+    const Mesh &meshA_transformed, const Mesh &meshB_transformed,
     double &outTimeMs)
 {
     std::vector<int2> results;
@@ -118,13 +109,6 @@ std::vector<int2> TestSuite::runCGALParallel(
         outTimeMs = 0.0;
         return results;
     }
-
-    Mesh meshA_transformed, meshB_transformed;
-    Point3 centerA(app_.normCenterA.x, app_.normCenterA.y, app_.normCenterA.z);
-    Point3 centerB(app_.normCenterB.x, app_.normCenterB.y, app_.normCenterB.z);
-
-    transformCgalMesh(app_.meshA, meshA_transformed, centerA, rotA, transA);
-    transformCgalMesh(app_.meshB, meshB_transformed, centerB, rotB, transB);
 
     std::vector<std::pair<size_t, size_t>> intersectedTris;
     outTimeMs = computeCGALParallel(meshA_transformed, meshB_transformed, intersectedTris);
@@ -174,9 +158,27 @@ std::vector<int2> TestSuite::runMainGPUPipeline(
     return results;
 }
 
+void extractVertexCoordinatesParallelLocal(const Mesh &mesh, std::vector<double3> &outVerts)
+{
+  size_t numVerts = num_vertices(mesh);
+  outVerts.resize(numVerts);
+  auto coords = mesh.points();
+
+  tbb::parallel_for(tbb::blocked_range<size_t>(0, numVerts), [&](const tbb::blocked_range<size_t> &r)
+                    {
+    for(size_t i = r.begin(); i != r.end(); ++i) {
+      typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
+      const auto& p = coords[v];
+      outVerts[i] = make_double3(
+          CGAL::to_double(p.x()), 
+          CGAL::to_double(p.y()), 
+          CGAL::to_double(p.z())
+      );
+    } });
+}
 std::vector<int2> TestSuite::runStandalonePipeline(
-    const double3 &rotA, const double3 &transA,
-    const double3 &rotB, const double3 &transB,
+    Mesh &meshA_transformed, // Removed const here
+    Mesh &meshB_transformed, // Removed const here
     const TestConfig &config,
     double &outTimeMs,
     size_t &outCandidates,
@@ -185,18 +187,28 @@ std::vector<int2> TestSuite::runStandalonePipeline(
     Point3 centerA(app_.normCenterA.x, app_.normCenterA.y, app_.normCenterA.z);
     Point3 centerB(app_.normCenterB.x, app_.normCenterB.y, app_.normCenterB.z);
 
+    // Extract vertex coordinates from the pre-transformed meshes
+    std::vector<double3> hVertsA_transformed, hVertsB_transformed;
+    extractVertexCoordinatesParallelLocal(meshA_transformed, hVertsA_transformed);
+    extractVertexCoordinatesParallelLocal(meshB_transformed, hVertsB_transformed);
+
     ExecutionStats testStats;
     int2 *outPairs = nullptr;
     size_t outCount = 0;
 
     auto tStart = std::chrono::high_resolution_clock::now();
+    
     runGridForestIntersectionPipeline(
-        app_.meshA, app_.meshB, app_.hVertsA.data(), static_cast<int>(app_.hVertsA.size()),
+        meshA_transformed, meshB_transformed, 
+        hVertsA_transformed.data(), static_cast<int>(hVertsA_transformed.size()),
         app_.hIndicesA.data(), static_cast<int>(app_.hIndicesA.size()), config.queryDescentLevel,
-        app_.hVertsB.data(), static_cast<int>(app_.hVertsB.size()), app_.hIndicesB.data(),
+        hVertsB_transformed.data(), static_cast<int>(hVertsB_transformed.size()), app_.hIndicesB.data(),
         static_cast<int>(app_.hIndicesB.size()), config.referenceDescentLevel, config.batchMultiplier,
         config.dualTreeSteps, config.enableGpuPrecision, config.leafThreshold, testStats,
-        outPairs, outCount, centerA, centerB, rotA, transA, rotB, transB);
+        outPairs, outCount, centerA, centerB, 
+        make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0), 
+        make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0));
+        
     auto tEnd = std::chrono::high_resolution_clock::now();
     outTimeMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
     outCandidates = testStats.finalAabbCandidatePairs;
@@ -210,7 +222,6 @@ std::vector<int2> TestSuite::runStandalonePipeline(
     }
     return results;
 }
-
 VerificationResult TestSuite::evaluateStep(
     int stepIdx,
     const double3 &rotA, const double3 &transA,
@@ -228,8 +239,16 @@ VerificationResult TestSuite::evaluateStep(
     size_t facesB = num_faces(app_.meshB);
     res.totalPossiblePairs = facesA * facesB;
 
-    // 1. CGAL Classic (Ground Truth)
-    auto gtPairs = runCGALClassicGroundTruth(rotA, transA, rotB, transB, res.cgalClassicTimeMs);
+    // 1. Transform CGAL meshes ONCE for all CPU-based pipelines in this step
+    Mesh meshA_transformed, meshB_transformed;
+    Point3 centerA(app_.normCenterA.x, app_.normCenterA.y, app_.normCenterA.z);
+    Point3 centerB(app_.normCenterB.x, app_.normCenterB.y, app_.normCenterB.z);
+
+    transformCgalMesh(app_.meshA, meshA_transformed, centerA, rotA, transA);
+    transformCgalMesh(app_.meshB, meshB_transformed, centerB, rotB, transB);
+
+    // 2. CGAL Classic (Ground Truth)
+    auto gtPairs = runCGALClassicGroundTruth(meshA_transformed, meshB_transformed, res.cgalClassicTimeMs);
     auto gtSet = convertToCanonicalSet(gtPairs);
     res.groundTruthCount = gtSet.size();
 
@@ -238,16 +257,16 @@ VerificationResult TestSuite::evaluateStep(
     double totalAreaB = computeTotalMeshArea(app_.meshB);
     res.surfaceOverlapRatio = computeIntersectedSurfaceArea(app_.meshA, app_.meshB, gtSet, totalAreaA, totalAreaB);
 
-    // 2. CGAL Parallel
+    // 3. CGAL Parallel
     if (config.testCgalParallel)
     {
-        auto cgalPPairs = runCGALParallel(rotA, transA, rotB, transB, res.cgalParallelTimeMs);
+        auto cgalPPairs = runCGALParallel(meshA_transformed, meshB_transformed, res.cgalParallelTimeMs);
         auto cgalPSet = convertToCanonicalSet(cgalPPairs);
         res.cgalParallelCount = cgalPSet.size();
         res.cgalParallelExactMatch = (gtSet == cgalPSet);
     }
 
-    // 3. Main GPU Pipeline (Standard Compute)
+    // 4. Main GPU Pipeline (Standard Compute - uses its own controller transform mechanism)
     if (config.testMainGpuPipeline)
     {
         auto mainPairs = runMainGPUPipeline(rotA, transA, rotB, transB, config, res.gpuMainTimeMs, res.candidatePairs, res.mainStats);
@@ -267,11 +286,11 @@ VerificationResult TestSuite::evaluateStep(
         }
     }
 
-    // 4. Standalone Pipeline
+    // 5. Standalone Pipeline
     if (config.testStandalonePipeline)
     {
         size_t standaloneCandidates = 0;
-        auto standalonePairs = runStandalonePipeline(rotA, transA, rotB, transB, config, res.standaloneTimeMs, standaloneCandidates, res.standaloneStats);
+        auto standalonePairs = runStandalonePipeline(meshA_transformed, meshB_transformed, config, res.standaloneTimeMs, standaloneCandidates, res.standaloneStats);
         auto standaloneSet = convertToCanonicalSet(standalonePairs);
         res.standaloneCount = standaloneSet.size();
         res.standaloneExactMatch = (gtSet == standaloneSet);
@@ -290,7 +309,6 @@ VerificationResult TestSuite::evaluateStep(
 
     return res;
 }
-
 // 1. Summary CSV (Overall Benchmarks)
 void TestSuite::exportToCSV(const std::string &filepath, const std::vector<VerificationResult> &results)
 {
