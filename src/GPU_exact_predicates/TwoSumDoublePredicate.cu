@@ -1,13 +1,7 @@
 #include "TwoSumDoublePredicate.h"
 #include "GPUPredicatesCommon.h"
+#include "GPUInterval.h"
 #include <cmath>
-
-// --------------------------------------------------------------------
-// MEMORY HELPER (Fixes __ldg overload error for 24-byte double3)
-// --------------------------------------------------------------------
-__device__ inline double3 load_double3(const double3* ptr) {
-    return make_double3(__ldg(&(ptr->x)), __ldg(&(ptr->y)), __ldg(&(ptr->z)));
-}
 
 // --------------------------------------------------------------------
 // DOUBLE-SINGLE (DS) SIMULATION ARITHMETIC
@@ -26,10 +20,6 @@ __device__ inline ds_float double_to_ds(double val) {
     float hi = static_cast<float>(val);
     float lo = static_cast<float>(val - static_cast<double>(hi));
     return { hi, lo };
-}
-
-__device__ inline ds_vec3 to_ds_vec(double3 v) {
-    return { double_to_ds(v.x), double_to_ds(v.y), double_to_ds(v.z) };
 }
 
 __device__ inline ds_float quick_two_sum(float a, float b) {
@@ -80,27 +70,30 @@ __device__ inline bool ds_lt(ds_float a, ds_float b) {
 }
 
 // --------------------------------------------------------------------
-// DOUBLE-SINGLE (DS) INTERVAL ARITHMETIC TYPES & OPERATIONS
+// DOUBLE-SINGLE (DS) INTERVAL ARITHMETIC ALIASES & OPERATIONS
 // --------------------------------------------------------------------
-struct dsInterval {
-    ds_float lo;
-    ds_float hi;
-};
+using dsInterval = GPUInterval<ds_float>;
+using vec3DsInterval = vec3Interval<ds_float>;
 
-struct vec3DsInterval {
-    dsInterval x, y, z;
-};
+// Rigorous interval-to-interval creation using FP64 directed rounding and conversion to DS
+__device__ inline dsInterval make_ds_interval_from_interval(GPUInterval<double> x_val, GPUInterval<double> anchor_val) {
+    // 1. FP64 interval subtraction with directed rounding: [lo - hi, hi - lo]
+    double rel_lo = __dsub_rd(x_val.lo, anchor_val.hi);
+    double rel_hi = __dsub_ru(x_val.hi, anchor_val.lo);
 
-// Rigorous interval creation for relative anchor offsets (using device-safe fabsf)
-__device__ inline dsInterval make_ds_interval(double x_world, double anchor_world) {
-    double diff = x_world - anchor_world;
-    ds_float exact_ds = double_to_ds(diff);
-    
+    // 2. Convert exact bounds to double-single representation
+    ds_float ds_lo = double_to_ds(rel_lo);
+    ds_float ds_hi = double_to_ds(rel_hi);
+
+    // 3. Apply safety error bounds for double-single floating-point conversion
     constexpr float eps_ds = 1.1920929e-7f * 1.1920929e-7f; // ~1.4e-14
-    float abs_hi = fabsf(exact_ds.hi);
-    ds_float lo_bound = ds_sub(exact_ds, {abs_hi * eps_ds, 0.0f});
-    ds_float hi_bound = ds_add(exact_ds, {abs_hi * eps_ds, 0.0f});
-    return { lo_bound, hi_bound };
+    float abs_lo = fabsf(ds_lo.hi);
+    float abs_hi = fabsf(ds_hi.hi);
+
+    ds_float lo_bound = ds_sub(ds_lo, {abs_lo * eps_ds, 0.0f});
+    ds_float hi_bound = ds_add(ds_hi, {abs_hi * eps_ds, 0.0f});
+    
+    return dsInterval{ lo_bound, hi_bound };
 }
 
 __device__ inline dsInterval ds_interval_sub(dsInterval a, dsInterval b) {
@@ -163,11 +156,10 @@ __device__ inline int orient3d_ds_interval(
         ds_interval_mul(pdz, ds_interval_sub(ds_interval_mul(qdx, rdy), ds_interval_mul(qdy, rdx)))
     );
 
-    // Pure mathematical sign check on rigorous intervals
     ds_float zero = {0.0f, 0.0f};
     if (ds_gt(det.lo, zero)) return 1;
     if (ds_lt(det.hi, zero)) return -1;
-    return 0; // Determinant straddles zero -> Exact CPU Fallback (PAIR_YELLOW)
+    return 0; 
 }
 
 __device__ inline int edgeTri_ds_interval(
@@ -194,43 +186,43 @@ __device__ inline int edgeTri_ds_interval(
 // CLASSIFICATION FUNCTION (Double-Single Interval Arithmetic)
 // --------------------------------------------------------------------
 __device__ inline PairStatus classifyPairDS(
-    const double3& Aa, const double3& Ab, const double3& Ac,
-    const double3& Ba, const double3& Bb, const double3& Bc) 
+    const vec3IntervalDouble& Aa, const vec3IntervalDouble& Ab, const vec3IntervalDouble& Ac,
+    const vec3IntervalDouble& Ba, const vec3IntervalDouble& Bb, const vec3IntervalDouble& Bc) 
 {    
-    // 1. Exact Double Anchor Shift
-    const double3 anchor = Aa;
+    // 1. Pick Vertex Aa interval as Local Anchor Origin
+    const vec3IntervalDouble anchor = Aa;
     
-    // 2. Build DS Intervals for all relative vertices
+    // 2. Build DS Intervals for all relative vertex intervals
     const vec3DsInterval A0 = {
         dsInterval{{0.0f, 0.0f}, {0.0f, 0.0f}},
         dsInterval{{0.0f, 0.0f}, {0.0f, 0.0f}},
         dsInterval{{0.0f, 0.0f}, {0.0f, 0.0f}}
     };
     const vec3DsInterval A1 = {
-        make_ds_interval(Ab.x, anchor.x),
-        make_ds_interval(Ab.y, anchor.y),
-        make_ds_interval(Ab.z, anchor.z)
+        make_ds_interval_from_interval(Ab.x, anchor.x),
+        make_ds_interval_from_interval(Ab.y, anchor.y),
+        make_ds_interval_from_interval(Ab.z, anchor.z)
     };
     const vec3DsInterval A2 = {
-        make_ds_interval(Ac.x, anchor.x),
-        make_ds_interval(Ac.y, anchor.y),
-        make_ds_interval(Ac.z, anchor.z)
+        make_ds_interval_from_interval(Ac.x, anchor.x),
+        make_ds_interval_from_interval(Ac.y, anchor.y),
+        make_ds_interval_from_interval(Ac.z, anchor.z)
     };
 
     const vec3DsInterval B0 = {
-        make_ds_interval(Ba.x, anchor.x),
-        make_ds_interval(Ba.y, anchor.y),
-        make_ds_interval(Ba.z, anchor.z)
+        make_ds_interval_from_interval(Ba.x, anchor.x),
+        make_ds_interval_from_interval(Ba.y, anchor.y),
+        make_ds_interval_from_interval(Ba.z, anchor.z)
     };
     const vec3DsInterval B1 = {
-        make_ds_interval(Bb.x, anchor.x),
-        make_ds_interval(Bb.y, anchor.y),
-        make_ds_interval(Bb.z, anchor.z)
+        make_ds_interval_from_interval(Bb.x, anchor.x),
+        make_ds_interval_from_interval(Bb.y, anchor.y),
+        make_ds_interval_from_interval(Bb.z, anchor.z)
     };
     const vec3DsInterval B2 = {
-        make_ds_interval(Bc.x, anchor.x),
-        make_ds_interval(Bc.y, anchor.y),
-        make_ds_interval(Bc.z, anchor.z)
+        make_ds_interval_from_interval(Bc.x, anchor.x),
+        make_ds_interval_from_interval(Bc.y, anchor.y),
+        make_ds_interval_from_interval(Bc.z, anchor.z)
     };
 
     // 3. Early Rejection Checks using DS Interval Orientations
@@ -267,9 +259,9 @@ __device__ inline PairStatus classifyPairDS(
 __global__ void evaluateGeometricPairsKernelDouble(
     int* dPairStatuses, 
     const int2* dYellowCandidatePairs, 
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs) 
 {
@@ -281,13 +273,13 @@ __global__ void evaluateGeometricPairsKernelDouble(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    double3 Aa = load_double3(&dVertsA[idxA.x]);
-    double3 Ab = load_double3(&dVertsA[idxA.y]);
-    double3 Ac = load_double3(&dVertsA[idxA.z]);
+    vec3IntervalDouble Aa = dVertsA[idxA.x];
+    vec3IntervalDouble Ab = dVertsA[idxA.y];
+    vec3IntervalDouble Ac = dVertsA[idxA.z];
 
-    double3 Ba = load_double3(&dVertsB[idxB.x]);
-    double3 Bb = load_double3(&dVertsB[idxB.y]);
-    double3 Bc = load_double3(&dVertsB[idxB.z]);
+    vec3IntervalDouble Ba = dVertsB[idxB.x];
+    vec3IntervalDouble Bb = dVertsB[idxB.y];
+    vec3IntervalDouble Bc = dVertsB[idxB.z];
 
     PairStatus status = classifyPairDS(Aa, Ab, Ac, Ba, Bb, Bc);
 
@@ -300,9 +292,9 @@ __global__ void evaluateGeometricPairsKernelDouble(
 void evaluateAndCompactPairsDouble(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream)

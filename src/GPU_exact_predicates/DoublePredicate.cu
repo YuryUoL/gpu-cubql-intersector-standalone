@@ -1,72 +1,67 @@
 #include "DoublePredicate.h"
 #include "GPUPredicatesCommon.h"
+#include "GPUInterval.h"
 #include <cmath>
 
 // --------------------------------------------------------------------
-// FP64 INTERVAL TYPES & DIRECTED ROUNDING INTRINSICS
+// RIGOROUS FP64 INTERVAL-TO-INTERVAL CREATION & ARITHMETIC
 // --------------------------------------------------------------------
-struct DoubleInterval {
-    double lo;
-    double hi;
-};
 
-// Rigorous interval creation from world coordinates using FP64 directed rounding
-__device__ inline DoubleInterval make_double_interval(double x_world, double anchor_world) {
-    return DoubleInterval{
-        __dsub_rd(x_world, anchor_world), // Force-rounds down toward -inf
-        __dsub_ru(x_world, anchor_world)  // Force-rounds up toward +inf
+// Rigorously shifts an input vertex interval relative to an anchor interval using FP64 directed rounding
+__device__ inline GPUInterval<double> make_double_interval_from_interval(
+    GPUInterval<double> x_val, GPUInterval<double> anchor_val) 
+{
+    return GPUInterval<double>{
+        __dsub_rd(x_val.lo, anchor_val.hi), // Force-rounds down toward -inf
+        __dsub_ru(x_val.hi, anchor_val.lo)  // Force-rounds up toward +inf
     };
 }
 
-__device__ inline DoubleInterval dinterval_sub(DoubleInterval a, DoubleInterval b) {
-    return DoubleInterval{
+__device__ inline GPUInterval<double> dinterval_sub(GPUInterval<double> a, GPUInterval<double> b) {
+    return GPUInterval<double>{
         __dsub_rd(a.lo, b.hi),
         __dsub_ru(a.hi, b.lo)
     };
 }
 
-__device__ inline DoubleInterval dinterval_add(DoubleInterval a, DoubleInterval b) {
-    return DoubleInterval{
+__device__ inline GPUInterval<double> dinterval_add(GPUInterval<double> a, GPUInterval<double> b) {
+    return GPUInterval<double>{
         __dadd_rd(a.lo, b.lo),
         __dadd_ru(a.hi, b.hi)
     };
 }
 
-__device__ inline DoubleInterval dinterval_mul(DoubleInterval a, DoubleInterval b) {
+__device__ inline GPUInterval<double> dinterval_mul(GPUInterval<double> a, GPUInterval<double> b) {
     double lo1 = __dmul_rd(a.lo, b.lo); double lo2 = __dmul_rd(a.lo, b.hi);
     double lo3 = __dmul_rd(a.hi, b.lo); double lo4 = __dmul_rd(a.hi, b.hi);
     double hi1 = __dmul_ru(a.lo, b.lo); double hi2 = __dmul_ru(a.lo, b.hi);
     double hi3 = __dmul_ru(a.hi, b.lo); double hi4 = __dmul_ru(a.hi, b.hi);
-    return DoubleInterval{
+    return GPUInterval<double>{
         fmin(fmin(lo1, lo2), fmin(lo3, lo4)),
         fmax(fmax(hi1, hi2), fmax(hi3, hi4))
     };
 }
 
-struct vec3DoubleInterval {
-    DoubleInterval x, y, z;
-};
-
 // --------------------------------------------------------------------
 // RIGOROUS FP64 INTERVAL ORIENT3D & EDGETRI PREDICATES
 // --------------------------------------------------------------------
 __device__ inline int orient3d_double_interval(
-    const vec3DoubleInterval& p, const vec3DoubleInterval& q, 
-    const vec3DoubleInterval& r, const vec3DoubleInterval& s) 
+    const vec3Interval<double>& p, const vec3Interval<double>& q, 
+    const vec3Interval<double>& r, const vec3Interval<double>& s) 
 {
-    DoubleInterval pdx = dinterval_sub(p.x, s.x); 
-    DoubleInterval pdy = dinterval_sub(p.y, s.y); 
-    DoubleInterval pdz = dinterval_sub(p.z, s.z);
+    GPUInterval<double> pdx = dinterval_sub(p.x, s.x); 
+    GPUInterval<double> pdy = dinterval_sub(p.y, s.y); 
+    GPUInterval<double> pdz = dinterval_sub(p.z, s.z);
 
-    DoubleInterval qdx = dinterval_sub(q.x, s.x); 
-    DoubleInterval qdy = dinterval_sub(q.y, s.y); 
-    DoubleInterval qdz = dinterval_sub(q.z, s.z);
+    GPUInterval<double> qdx = dinterval_sub(q.x, s.x); 
+    GPUInterval<double> qdy = dinterval_sub(q.y, s.y); 
+    GPUInterval<double> qdz = dinterval_sub(q.z, s.z);
 
-    DoubleInterval rdx = dinterval_sub(r.x, s.x); 
-    DoubleInterval rdy = dinterval_sub(r.y, s.y); 
-    DoubleInterval rdz = dinterval_sub(r.z, s.z);
+    GPUInterval<double> rdx = dinterval_sub(r.x, s.x); 
+    GPUInterval<double> rdy = dinterval_sub(r.y, s.y); 
+    GPUInterval<double> rdz = dinterval_sub(r.z, s.z);
 
-    DoubleInterval det = dinterval_add(
+    GPUInterval<double> det = dinterval_add(
         dinterval_add(
             dinterval_mul(pdx, dinterval_sub(dinterval_mul(qdy, rdz), dinterval_mul(qdz, rdy))),
             dinterval_mul(pdy, dinterval_sub(dinterval_mul(qdz, rdx), dinterval_mul(qdx, rdz)))
@@ -81,8 +76,8 @@ __device__ inline int orient3d_double_interval(
 }
 
 __device__ inline int edgeTri_double_interval(
-    const vec3DoubleInterval &a, const vec3DoubleInterval &b,
-    const vec3DoubleInterval &p, const vec3DoubleInterval &q, const vec3DoubleInterval &r) 
+    const vec3Interval<double> &a, const vec3Interval<double> &b,
+    const vec3Interval<double> &p, const vec3Interval<double> &q, const vec3Interval<double> &r) 
 {
     int s0 = orient3d_double_interval(p, q, r, a);
     int s1 = orient3d_double_interval(p, q, r, b);
@@ -101,53 +96,47 @@ __device__ inline int edgeTri_double_interval(
 }
 
 // --------------------------------------------------------------------
-// MEMORY HELPER
-// --------------------------------------------------------------------
-__device__ inline double3 load_double3(const double3* ptr) {
-    return make_double3(__ldg(&(ptr->x)), __ldg(&(ptr->y)), __ldg(&(ptr->z)));
-}
-
-// --------------------------------------------------------------------
 // CLASSIFICATION FUNCTION (Hardware FP64 Interval Arithmetic)
 // --------------------------------------------------------------------
 __device__ inline PairStatus classifyPairDoubleFull(
-    const double3& Aa, const double3& Ab, const double3& Ac,
-    const double3& Ba, const double3& Bb, const double3& Bc) 
+    const vec3IntervalDouble& Aa, const vec3IntervalDouble& Ab, const vec3IntervalDouble& Ac,
+    const vec3IntervalDouble& Ba, const vec3IntervalDouble& Bb, const vec3IntervalDouble& Bc) 
 {    
-    // 1. Exact Double Anchor Shift with Rigorous Interval Construction
-    const double3 anchor = Aa;
+    // 1. Pick Vertex Aa interval as Local Anchor Origin
+    const vec3IntervalDouble anchor = Aa;
     
-    const vec3DoubleInterval A0 = {
-        DoubleInterval{0.0, 0.0}, DoubleInterval{0.0, 0.0}, DoubleInterval{0.0, 0.0}
+    // 2. Build Anchor Origin Interval (Zero-width point interval at origin) and relative intervals
+    const vec3Interval<double> A0 = {
+        GPUInterval<double>{0.0, 0.0}, GPUInterval<double>{0.0, 0.0}, GPUInterval<double>{0.0, 0.0}
     };
-    const vec3DoubleInterval A1 = {
-        make_double_interval(Ab.x, anchor.x),
-        make_double_interval(Ab.y, anchor.y),
-        make_double_interval(Ab.z, anchor.z)
+    const vec3Interval<double> A1 = {
+        make_double_interval_from_interval(Ab.x, anchor.x),
+        make_double_interval_from_interval(Ab.y, anchor.y),
+        make_double_interval_from_interval(Ab.z, anchor.z)
     };
-    const vec3DoubleInterval A2 = {
-        make_double_interval(Ac.x, anchor.x),
-        make_double_interval(Ac.y, anchor.y),
-        make_double_interval(Ac.z, anchor.z)
-    };
-
-    const vec3DoubleInterval B0 = {
-        make_double_interval(Ba.x, anchor.x),
-        make_double_interval(Ba.y, anchor.y),
-        make_double_interval(Ba.z, anchor.z)
-    };
-    const vec3DoubleInterval B1 = {
-        make_double_interval(Bb.x, anchor.x),
-        make_double_interval(Bb.y, anchor.y),
-        make_double_interval(Bb.z, anchor.z)
-    };
-    const vec3DoubleInterval B2 = {
-        make_double_interval(Bc.x, anchor.x),
-        make_double_interval(Bc.y, anchor.y),
-        make_double_interval(Bc.z, anchor.z)
+    const vec3Interval<double> A2 = {
+        make_double_interval_from_interval(Ac.x, anchor.x),
+        make_double_interval_from_interval(Ac.y, anchor.y),
+        make_double_interval_from_interval(Ac.z, anchor.z)
     };
 
-    // 2. Early Rejection Checks using Interval Orientations
+    const vec3Interval<double> B0 = {
+        make_double_interval_from_interval(Ba.x, anchor.x),
+        make_double_interval_from_interval(Ba.y, anchor.y),
+        make_double_interval_from_interval(Ba.z, anchor.z)
+    };
+    const vec3Interval<double> B1 = {
+        make_double_interval_from_interval(Bb.x, anchor.x),
+        make_double_interval_from_interval(Bb.y, anchor.y),
+        make_double_interval_from_interval(Bb.z, anchor.z)
+    };
+    const vec3Interval<double> B2 = {
+        make_double_interval_from_interval(Bc.x, anchor.x),
+        make_double_interval_from_interval(Bc.y, anchor.y),
+        make_double_interval_from_interval(Bc.z, anchor.z)
+    };
+
+    // 3. Early Rejection Checks using Interval Orientations
     int ob0 = orient3d_double_interval(A0, A1, A2, B0);
     int ob1 = orient3d_double_interval(A0, A1, A2, B1);
     int ob2 = orient3d_double_interval(A0, A1, A2, B2);
@@ -162,7 +151,7 @@ __device__ inline PairStatus classifyPairDoubleFull(
         if ((oa0 > 0 && oa1 > 0 && oa2 > 0) || (oa0 < 0 && oa1 < 0 && oa2 < 0)) return PAIR_NO;
     }
 
-    // 3. Detailed Edge-Triangle Interval Predicates
+    // 4. Detailed Edge-Triangle Interval Predicates
     int r;
     r = edgeTri_double_interval(A0, A1, B0, B1, B2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
     r = edgeTri_double_interval(A1, A2, B0, B1, B2); if (r == PAIR_GREEN) return PAIR_GREEN; if (r == PAIR_YELLOW) return PAIR_YELLOW;
@@ -181,9 +170,9 @@ __device__ inline PairStatus classifyPairDoubleFull(
 __global__ void evaluateGeometricPairsKernelDoubleFull(
     int* dPairStatuses, 
     const int2* dYellowCandidatePairs, 
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs) 
 {
@@ -195,13 +184,13 @@ __global__ void evaluateGeometricPairsKernelDoubleFull(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    double3 Aa = load_double3(&dVertsA[idxA.x]);
-    double3 Ab = load_double3(&dVertsA[idxA.y]);
-    double3 Ac = load_double3(&dVertsA[idxA.z]);
+    vec3IntervalDouble Aa = dVertsA[idxA.x];
+    vec3IntervalDouble Ab = dVertsA[idxA.y];
+    vec3IntervalDouble Ac = dVertsA[idxA.z];
 
-    double3 Ba = load_double3(&dVertsB[idxB.x]);
-    double3 Bb = load_double3(&dVertsB[idxB.y]);
-    double3 Bc = load_double3(&dVertsB[idxB.z]);
+    vec3IntervalDouble Ba = dVertsB[idxB.x];
+    vec3IntervalDouble Bb = dVertsB[idxB.y];
+    vec3IntervalDouble Bc = dVertsB[idxB.z];
 
     PairStatus status = classifyPairDoubleFull(Aa, Ab, Ac, Ba, Bb, Bc);
 
@@ -211,9 +200,9 @@ __global__ void evaluateGeometricPairsKernelDoubleFull(
 void evaluateAndCompactPairsDoubleFull(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream)

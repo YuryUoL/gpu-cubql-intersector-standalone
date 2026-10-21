@@ -1,52 +1,83 @@
 #include "OriginShiftedFloatPredicate.h"
 #include "GPUPredicatesCommon.h"
+#include "GPUInterval.h"
+
+// --------------------------------------------------------------------
+// RIGOROUS INTERVAL-TO-INTERVAL SHIFT & FP32 CONVERSION
+// --------------------------------------------------------------------
+__device__ inline GPUInterval<float> make_provable_interval_from_interval(
+    GPUInterval<double> x_val, GPUInterval<double> anchor_val) 
+{
+    // 1. Rigorous interval subtraction in FP64 with directed rounding: [lo - hi, hi - lo]
+    double rel_lo = __dsub_rd(x_val.lo, anchor_val.hi);
+    double rel_hi = __dsub_ru(x_val.hi, anchor_val.lo);
+
+    // 2. Rigorous conversion from FP64 to FP32 with outward directed rounding
+    float f_lo = __double2float_rd(rel_lo);
+    float f_hi = __double2float_ru(rel_hi);
+
+    // 3. Combined relative error bound (FP64 subtraction + FP32 cast truncation)
+    constexpr float C_provable = 5.9604650e-8f; 
+    float err_lo = fabsf(f_lo) * C_provable;
+    float err_hi = fabsf(f_hi) * C_provable;
+
+    // Subnormal / underflow floor safeguard
+    constexpr float min_normal_float = 1.17549435e-38f;
+    err_lo = fmaxf(err_lo, min_normal_float * 2.0f);
+    err_hi = fmaxf(err_hi, min_normal_float * 2.0f);
+
+    return GPUInterval<float>{
+        __fsub_rd(f_lo, err_lo),
+        __fadd_ru(f_hi, err_hi)
+    };
+}
 
 // --------------------------------------------------------------------
 // ANCHOR-SHIFTED + RIGOROUS INTERVAL CLASSIFICATION FUNCTION
 // --------------------------------------------------------------------
 __device__ inline PairStatus classifyPair(
-    const double3& Aa, const double3& Ab, const double3& Ac,
-    const double3& Ba, const double3& Bb, const double3& Bc) 
+    const vec3IntervalDouble& Aa, const vec3IntervalDouble& Ab, const vec3IntervalDouble& Ac,
+    const vec3IntervalDouble& Ba, const vec3IntervalDouble& Bb, const vec3IntervalDouble& Bc) 
 {    
-    // 1. Pick Vertex Aa as Local Anchor Origin
-    const double3 anchor = Aa;
+    // 1. Pick Vertex Aa interval as Local Anchor Origin
+    const vec3IntervalDouble anchor = Aa;
 
     // 2. Build Anchor Origin Interval (Zero-width point interval at origin)
-    const vec3Interval A0 = {
-        GPUInterval{0.0f, 0.0f},
-        GPUInterval{0.0f, 0.0f},
-        GPUInterval{0.0f, 0.0f}
+    const vec3Interval<float> A0 = {
+        GPUInterval<float>{0.0f, 0.0f},
+        GPUInterval<float>{0.0f, 0.0f},
+        GPUInterval<float>{0.0f, 0.0f}
     };
 
-    // 3. Perform FP64 Shift and Rigorous FP32 Interval Conversion
-    vec3Interval A1 = {
-        make_provable_relative_interval(Ab.x, anchor.x),
-        make_provable_relative_interval(Ab.y, anchor.y),
-        make_provable_relative_interval(Ab.z, anchor.z)
+    // 3. Perform Rigorous Interval-to-Interval Shift and FP32 Interval Conversion
+    vec3Interval<float> A1 = {
+        make_provable_interval_from_interval(Ab.x, anchor.x),
+        make_provable_interval_from_interval(Ab.y, anchor.y),
+        make_provable_interval_from_interval(Ab.z, anchor.z)
     };
-    vec3Interval A2 = {
-        make_provable_relative_interval(Ac.x, anchor.x),
-        make_provable_relative_interval(Ac.y, anchor.y),
-        make_provable_relative_interval(Ac.z, anchor.z)
-    };
-
-    vec3Interval B0 = {
-        make_provable_relative_interval(Ba.x, anchor.x),
-        make_provable_relative_interval(Ba.y, anchor.y),
-        make_provable_relative_interval(Ba.z, anchor.z)
-    };
-    vec3Interval B1 = {
-        make_provable_relative_interval(Bb.x, anchor.x),
-        make_provable_relative_interval(Bb.y, anchor.y),
-        make_provable_relative_interval(Bb.z, anchor.z)
-    };
-    vec3Interval B2 = {
-        make_provable_relative_interval(Bc.x, anchor.x),
-        make_provable_relative_interval(Bc.y, anchor.y),
-        make_provable_relative_interval(Bc.z, anchor.z)
+    vec3Interval<float> A2 = {
+        make_provable_interval_from_interval(Ac.x, anchor.x),
+        make_provable_interval_from_interval(Ac.y, anchor.y),
+        make_provable_interval_from_interval(Ac.z, anchor.z)
     };
 
-    // 4. Compute Local Maximum Coordinate Bound (Optional safety check for degeneracies)
+    vec3Interval<float> B0 = {
+        make_provable_interval_from_interval(Ba.x, anchor.x),
+        make_provable_interval_from_interval(Ba.y, anchor.y),
+        make_provable_interval_from_interval(Ba.z, anchor.z)
+    };
+    vec3Interval<float> B1 = {
+        make_provable_interval_from_interval(Bb.x, anchor.x),
+        make_provable_interval_from_interval(Bb.y, anchor.y),
+        make_provable_interval_from_interval(Bb.z, anchor.z)
+    };
+    vec3Interval<float> B2 = {
+        make_provable_interval_from_interval(Bc.x, anchor.x),
+        make_provable_interval_from_interval(Bc.y, anchor.y),
+        make_provable_interval_from_interval(Bc.z, anchor.z)
+    };
+
+    // 4. Compute Local Maximum Coordinate Bound (Safety check for degeneracies)
     float mx1 = fmaxf(fabsf(A1.x.hi), fabsf(A1.y.hi));
     float mx2 = fmaxf(fabsf(A1.z.hi), fabsf(A2.x.hi));
     float mx3 = fmaxf(fabsf(A2.y.hi), fabsf(A2.z.hi));
@@ -67,8 +98,6 @@ __device__ inline PairStatus classifyPair(
     if (M_local <= 1e-12f) {
         return PAIR_YELLOW;
     }
-
-    // (Normalization step removed completely — zero extra rounding error introduced!)
 
     // 6. Geometrical Predicate Evaluation Passes (Using Raw Shifted Intervals)
     int ob0 = orient3d_interval(A0, A1, A2, B0);
@@ -103,9 +132,9 @@ __device__ inline PairStatus classifyPair(
 __global__ void evaluateGeometricPairsKernelDoubleAssisted(
     int* outStatuses, 
     const int2* candidatePairs, 
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numPairs) 
 {
@@ -117,13 +146,13 @@ __global__ void evaluateGeometricPairsKernelDoubleAssisted(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    double3 Aa = { __ldg(&dVertsA[idxA.x].x), __ldg(&dVertsA[idxA.x].y), __ldg(&dVertsA[idxA.x].z) };
-    double3 Ab = { __ldg(&dVertsA[idxA.y].x), __ldg(&dVertsA[idxA.y].y), __ldg(&dVertsA[idxA.y].z) };
-    double3 Ac = { __ldg(&dVertsA[idxA.z].x), __ldg(&dVertsA[idxA.z].y), __ldg(&dVertsA[idxA.z].z) };
+    vec3IntervalDouble Aa = dVertsA[idxA.x];
+    vec3IntervalDouble Ab = dVertsA[idxA.y];
+    vec3IntervalDouble Ac = dVertsA[idxA.z];
 
-    double3 Ba = { __ldg(&dVertsB[idxB.x].x), __ldg(&dVertsB[idxB.x].y), __ldg(&dVertsB[idxB.x].z) };
-    double3 Bb = { __ldg(&dVertsB[idxB.y].x), __ldg(&dVertsB[idxB.y].y), __ldg(&dVertsB[idxB.y].z) };
-    double3 Bc = { __ldg(&dVertsB[idxB.z].x), __ldg(&dVertsB[idxB.z].y), __ldg(&dVertsB[idxB.z].z) };
+    vec3IntervalDouble Ba = dVertsB[idxB.x];
+    vec3IntervalDouble Bb = dVertsB[idxB.y];
+    vec3IntervalDouble Bc = dVertsB[idxB.z];
 
     PairStatus status = classifyPair(Aa, Ab, Ac, Ba, Bb, Bc);
 
@@ -136,9 +165,9 @@ __global__ void evaluateGeometricPairsKernelDoubleAssisted(
 void evaluateAndCompactPairsDoubleAssisted(
     const int2* dCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int totalBatchPairs,
     cudaStream_t stream)

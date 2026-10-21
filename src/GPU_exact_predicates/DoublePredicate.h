@@ -4,15 +4,16 @@
 #include <cuda_runtime.h>
 #include <vector_types.h>
 #include "PairStatus.h"
+#include "GPUInterval.h"
 
-// Executes a hardware FP64 double-precision evaluation on the yellow candidate list.
-// Outputs PAIR_GREEN (intersecting), PAIR_NO (separated), or PAIR_YELLOW (uncertain/exact CPU fallback).
+// Executes a hardware FP64 double-precision interval evaluation on the candidate list
+// accepting interval-valued vertex inputs.
 void evaluateAndCompactPairsDoubleFull(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream = 0

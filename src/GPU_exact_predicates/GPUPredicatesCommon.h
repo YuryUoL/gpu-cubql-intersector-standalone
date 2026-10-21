@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 #include <cmath>
 #include "PairStatus.h"
+#include "GPUInterval.h" // <--- Extracted header inclusion
 #include "cuBQL/bvh.h"
 #include "samples/common/loadOBJ.h"
 
@@ -11,20 +12,12 @@
 #endif
 
 // --------------------------------------------------------------------
-// INTERVAL ARITHMETIC & GEOMETRIC TYPES
+// INTERVAL ARITHMETIC & GEOMETRIC OPERATIONS (FP32)
 // --------------------------------------------------------------------
-struct GPUInterval {
-    float lo;
-    float hi;
-};
-
-struct vec3Interval {
-    GPUInterval x, y, z;
-};
 
 // Rigorously constructs a provable FP32 interval from an exact double relative shift.
 // Accounts for FP64 subtraction error + FP32 cast truncation via hardware directed rounding.
-__device__ inline GPUInterval make_provable_relative_interval(double x_world, double anchor_world) {
+__device__ inline GPUInterval<float> make_provable_relative_interval(double x_world, double anchor_world) {
     double diff_64 = x_world - anchor_world;
     float f = static_cast<float>(diff_64);
 
@@ -36,21 +29,21 @@ __device__ inline GPUInterval make_provable_relative_interval(double x_world, do
     constexpr float min_normal_float = 1.17549435e-38f;
     err = fmaxf(err, min_normal_float * 2.0f);
 
-    return GPUInterval{
+    return GPUInterval<float>{
         __fsub_rd(f, err),
         __fadd_ru(f, err)
     };
 }
 
-__device__ inline GPUInterval interval_sub(GPUInterval a, GPUInterval b) { 
+__device__ inline GPUInterval<float> interval_sub(GPUInterval<float> a, GPUInterval<float> b) { 
     return { __fsub_rd(a.lo, b.hi), __fsub_ru(a.hi, b.lo) }; 
 }
 
-__device__ inline GPUInterval interval_add(GPUInterval a, GPUInterval b) { 
+__device__ inline GPUInterval<float> interval_add(GPUInterval<float> a, GPUInterval<float> b) { 
     return { __fadd_rd(a.lo, b.lo), __fadd_ru(a.hi, b.hi) }; 
 }
 
-__device__ inline GPUInterval interval_mul(GPUInterval a, GPUInterval b) {
+__device__ inline GPUInterval<float> interval_mul(GPUInterval<float> a, GPUInterval<float> b) {
     float lo1 = __fmul_rd(a.lo, b.lo); float lo2 = __fmul_rd(a.lo, b.hi);
     float lo3 = __fmul_rd(a.hi, b.lo); float lo4 = __fmul_rd(a.hi, b.hi);
     float hi1 = __fmul_ru(a.lo, b.lo); float hi2 = __fmul_ru(a.lo, b.hi);
@@ -58,16 +51,16 @@ __device__ inline GPUInterval interval_mul(GPUInterval a, GPUInterval b) {
     return { fminf(fminf(lo1, lo2), fminf(lo3, lo4)), fmaxf(fmaxf(hi1, hi2), fmaxf(hi3, hi4)) };
 }
 
-__device__ inline GPUInterval interval_scale(GPUInterval a, float s) {
+__device__ inline GPUInterval<float> interval_scale(GPUInterval<float> a, float s) {
     float p1 = __fmul_rd(a.lo, s);
     float p2 = __fmul_rd(a.hi, s);
     float p3 = __fmul_ru(a.lo, s);
     float p4 = __fmul_ru(a.hi, s);
-    return GPUInterval{ fminf(p1, p2), fmaxf(p3, p4) };
+    return GPUInterval<float>{ fminf(p1, p2), fmaxf(p3, p4) };
 }
 
-__device__ inline vec3Interval scale_vec3_interval(const vec3Interval& v, float scale) {
-    return vec3Interval{
+__device__ inline vec3Interval<float> scale_vec3_interval(const vec3Interval<float>& v, float scale) {
+    return vec3Interval<float>{
         interval_scale(v.x, scale),
         interval_scale(v.y, scale),
         interval_scale(v.z, scale)
@@ -78,22 +71,22 @@ __device__ inline vec3Interval scale_vec3_interval(const vec3Interval& v, float 
 // INTERVAL-BASED PREDICATES (ZERO EPSILON REQUIRED)
 // --------------------------------------------------------------------
 __device__ inline int orient3d_interval(
-    const vec3Interval& p, const vec3Interval& q, 
-    const vec3Interval& r, const vec3Interval& s) 
+    const vec3Interval<float>& p, const vec3Interval<float>& q, 
+    const vec3Interval<float>& r, const vec3Interval<float>& s) 
 {
-    GPUInterval pdx = interval_sub(p.x, s.x); 
-    GPUInterval pdy = interval_sub(p.y, s.y); 
-    GPUInterval pdz = interval_sub(p.z, s.z);
+    GPUInterval<float> pdx = interval_sub(p.x, s.x); 
+    GPUInterval<float> pdy = interval_sub(p.y, s.y); 
+    GPUInterval<float> pdz = interval_sub(p.z, s.z);
 
-    GPUInterval qdx = interval_sub(q.x, s.x); 
-    GPUInterval qdy = interval_sub(q.y, s.y); 
-    GPUInterval qdz = interval_sub(q.z, s.z);
+    GPUInterval<float> qdx = interval_sub(q.x, s.x); 
+    GPUInterval<float> qdy = interval_sub(q.y, s.y); 
+    GPUInterval<float> qdz = interval_sub(q.z, s.z);
 
-    GPUInterval rdx = interval_sub(r.x, s.x); 
-    GPUInterval rdy = interval_sub(r.y, s.y); 
-    GPUInterval rdz = interval_sub(r.z, s.z);
+    GPUInterval<float> rdx = interval_sub(r.x, s.x); 
+    GPUInterval<float> rdy = interval_sub(r.y, s.y); 
+    GPUInterval<float> rdz = interval_sub(r.z, s.z);
 
-    GPUInterval det = interval_add(
+    GPUInterval<float> det = interval_add(
         interval_add(
             interval_mul(pdx, interval_sub(interval_mul(qdy, rdz), interval_mul(qdz, rdy))),
             interval_mul(pdy, interval_sub(interval_mul(qdz, rdx), interval_mul(qdx, rdz)))
@@ -107,8 +100,8 @@ __device__ inline int orient3d_interval(
 }
 
 __device__ inline int edgeTriInterval(
-    const vec3Interval &a, const vec3Interval &b,
-    const vec3Interval &p, const vec3Interval &q, const vec3Interval &r) 
+    const vec3Interval<float> &a, const vec3Interval<float> &b,
+    const vec3Interval<float> &p, const vec3Interval<float> &q, const vec3Interval<float> &r) 
 {
     int s0 = orient3d_interval(p, q, r, a);
     int s1 = orient3d_interval(p, q, r, b);

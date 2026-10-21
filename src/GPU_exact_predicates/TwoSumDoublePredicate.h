@@ -4,15 +4,16 @@
 #include <cuda_runtime.h>
 #include <vector_types.h>
 #include "PairStatus.h"
+#include "GPUInterval.h"
 
-// Executes a double-single (two-float) precision evaluation on the yellow list.
-// Outputs PAIR_GREEN, PAIR_NO, or PAIR_YELLOW (for the final exact CPU fallback).
+// Executes a double-single (two-float) precision evaluation on the candidate list
+// accepting interval-valued vertex inputs.
 void evaluateAndCompactPairsDouble(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream = 0

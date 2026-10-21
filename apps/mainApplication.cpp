@@ -1481,9 +1481,9 @@ int main(int argc, char **argv)
                        std::cout << "=======================================================\n";
                        std::cout << "  Mode 0 : Float predicates -> CPU\n";
                        std::cout << "  Mode 1 : Float predicates -> Simulated double -> CPU\n";
-                       std::cout << "  Mode 2 : Float predicates -> Inexact Big integer quantization (Experimental)\n";
-                       std::cout << "  Mode 3 : Float predicates -> Exact Big integer quantization -> CPU (Experimental)\n";
-                       std::cout << "  Mode 4 : Float predicates -> Real double -> CPU\n";
+                       std::cout << "  Mode 2 : Float predicates -> Real double -> CPU\n";
+                       std::cout << "  Mode 3 (Disabled for now): Float predicates -> Inexact Big integer quantization (Experimental)\n";
+                       std::cout << "  Mode 4 (Disabled for now): Float predicates -> Exact Big integer quantization -> CPU (Experimental)\n";
                        std::cout << "=======================================================\n\n";
                      });
 
