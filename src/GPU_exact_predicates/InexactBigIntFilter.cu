@@ -11,9 +11,15 @@ __device__ inline double3 load_double3(const double3* ptr) {
     return make_double3(__ldg(&(ptr->x)), __ldg(&(ptr->y)), __ldg(&(ptr->z)));
 }
 
-// --------------------------------------------------------------------
-// 128-BIT EXACT INTEGER PREDICATES
-// --------------------------------------------------------------------
+__device__ inline double3 load_interval_as_double3(const vec3IntervalDouble* ptr) {
+    vec3IntervalDouble v = *ptr; // Standard dereference
+    return make_double3(
+        (v.x.lo == v.x.hi) ? v.x.lo : (v.x.lo + v.x.hi) * 0.5,
+        (v.y.lo == v.y.hi) ? v.y.lo : (v.y.lo + v.y.hi) * 0.5,
+        (v.z.lo == v.z.hi) ? v.z.lo : (v.z.lo + v.z.hi) * 0.5
+    );
+}
+
 struct int3_128 {
     int64_t x, y, z;
 };
@@ -370,9 +376,9 @@ __device__ inline PairStatus classifyPairBigInt(
 __global__ void evaluateGeometricPairsKernelBigInt_Kernel(
     const int2* dYellowCandidatePairs, 
     int* dPairStatuses, 
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs) 
 {
@@ -383,13 +389,14 @@ __global__ void evaluateGeometricPairsKernelBigInt_Kernel(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    double3 Aa = load_double3(&dVertsA[idxA.x]);
-    double3 Ab = load_double3(&dVertsA[idxA.y]);
-    double3 Ac = load_double3(&dVertsA[idxA.z]);
+    // Load intervals and convert to average double3 points on-the-fly
+    double3 Aa = load_interval_as_double3(&dVertsA[idxA.x]);
+    double3 Ab = load_interval_as_double3(&dVertsA[idxA.y]);
+    double3 Ac = load_interval_as_double3(&dVertsA[idxA.z]);
 
-    double3 Ba = load_double3(&dVertsB[idxB.x]);
-    double3 Bb = load_double3(&dVertsB[idxB.y]);
-    double3 Bc = load_double3(&dVertsB[idxB.z]);
+    double3 Ba = load_interval_as_double3(&dVertsB[idxB.x]);
+    double3 Bb = load_interval_as_double3(&dVertsB[idxB.y]);
+    double3 Bc = load_interval_as_double3(&dVertsB[idxB.z]);
 
     PairStatus status = classifyPairBigInt(Aa, Ab, Ac, Ba, Bb, Bc);
     dPairStatuses[tid] = (int)status; 
@@ -401,9 +408,9 @@ __global__ void evaluateGeometricPairsKernelBigInt_Kernel(
 extern "C" void evaluateGeometricPairsKernelBigInt(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream) 

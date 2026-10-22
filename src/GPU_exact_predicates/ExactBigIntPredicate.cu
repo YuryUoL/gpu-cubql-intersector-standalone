@@ -1,20 +1,12 @@
 #include "ExactBigIntPredicate.h"
 #include "GPUPredicatesCommon.h"
+#include "GPUInterval.h"
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <cmath>
 
 // ======================================================================
 // FIXED-WIDTH EXACT INTEGER ARITHMETIC (384-bit signed-magnitude)
-//
-// Coordinates are exact bit-for-bit reconstructions of the input doubles
-// (mantissa + shared exponent, no rounding). That means a single
-// coordinate can need up to ~113 bits (53-bit mantissa + up to 60 bits of
-// exponent spread, see SPREAD_CAP below) -- still fits in __int128_t.
-// But orient3d's triple product multiplies three such coordinates
-// together, which can need up to ~340 bits. Hence this wide type, used
-// only for the internal predicate arithmetic. WLIMBS=6 (384 bits) gives
-// generous headroom above that ~340-bit worst case.
 // ======================================================================
 #define WLIMBS_V2 6
 
@@ -54,7 +46,6 @@ __device__ inline wideU_V2 wideU_add_V2(const wideU_V2& a, const wideU_V2& b) {
 }
 
 __device__ inline wideU_V2 wideU_sub_V2(const wideU_V2& a, const wideU_V2& b) {
-    // Precondition: a >= b (magnitude)
     wideU_V2 r;
     __int128 borrow = 0;
     #pragma unroll
@@ -73,9 +64,6 @@ __device__ inline wideU_V2 wideU_from_u128_V2(unsigned __int128 v) {
     return r;
 }
 
-// Schoolbook multiply, WLIMBS x WLIMBS -> keep low WLIMBS limbs.
-// Correct (no truncation) as long as the true product fits in WLIMBS*64
-// bits, which is guaranteed upstream by SPREAD_CAP.
 __device__ inline wideU_V2 wideU_mul_V2(const wideU_V2& a, const wideU_V2& b) {
     uint64_t acc[WLIMBS_V2 * 2];
     #pragma unroll
@@ -151,7 +139,6 @@ __device__ inline wideS_V2 wide_mul_i128_V2(__int128_t a, __int128_t b) {
     return wideS_mul_V2(wideS_from_i128_V2(a), wideS_from_i128_V2(b));
 }
 
-// a1*b2 - a2*b1, exact, wide result
 __device__ inline wideS_V2 wide_cross_term_V2(__int128_t a1, __int128_t a2, __int128_t b1, __int128_t b2) {
     return wideS_add_V2(wide_mul_i128_V2(a1, b2), wideS_neg_V2(wide_mul_i128_V2(a2, b1)));
 }
@@ -161,27 +148,28 @@ __device__ inline wideS_V2 wide_mul_scalar_wide_V2(__int128_t s, const wideS_V2&
 }
 
 // --------------------------------------------------------------------
-// EXACT DOUBLE -> INTEGER DECOMPOSITION (lossless)
-//
-// x == mant * 2^exp2 exactly, for any finite double x. mant fits in
-// ~54 signed bits. This is a pure bit-reinterpretation via frexp, not a
-// rounding/quantization step -- no precision is lost here.
+// EXACT DOUBLE -> INTEGER DECOMPOSITION
 // --------------------------------------------------------------------
 __device__ inline void exact_decompose_V2(double x, __int128_t& mant_out, int& exp_out, bool& nonzero_out) {
     if (x == 0.0) { mant_out = 0; exp_out = 0; nonzero_out = false; return; }
     int e;
-    double m = frexp(x, &e);                    // x = m * 2^e, 0.5 <= |m| < 1
-    double scaled = m * 9007199254740992.0;      // m * 2^53 -- exact (binary point shift only)
-    mant_out = (__int128_t)(int64_t)scaled;      // exact, |mant| < 2^53
-    exp_out = e - 53;                            // x == mant_out * 2^exp_out, exactly
+    double m = frexp(x, &e);                    
+    double scaled = m * 9007199254740992.0;      
+    mant_out = (__int128_t)(int64_t)scaled;      
+    exp_out = e - 53;                            
     nonzero_out = true;
 }
 
 // --------------------------------------------------------------------
-// MEMORY HELPER
+// INTERVAL-TO-DOUBLE3 MEMORY HELPER (Exact if lo == hi, else Midpoint)
 // --------------------------------------------------------------------
-__device__ inline double3 load_double3_V2(const double3* ptr) {
-    return make_double3(__ldg(&(ptr->x)), __ldg(&(ptr->y)), __ldg(&(ptr->z)));
+__device__ inline double3 load_interval_as_double3_V2(const vec3IntervalDouble* ptr) {
+    vec3IntervalDouble v = *ptr;
+    return make_double3(
+        (v.x.lo == v.x.hi) ? v.x.lo : (v.x.lo + v.x.hi) * 0.5,
+        (v.y.lo == v.y.hi) ? v.y.lo : (v.y.lo + v.y.hi) * 0.5,
+        (v.z.lo == v.z.hi) ? v.z.lo : (v.z.lo + v.z.hi) * 0.5
+    );
 }
 
 // --------------------------------------------------------------------
@@ -221,8 +209,10 @@ __device__ inline int orient3d_exact_V2(
 }
 
 // --------------------------------------------------------------------
-// FULL 2D SAT COPLANAR INTERSECTION (winding-independent)
+// FULL 2D SAT COPLANAR INTERSECTION & EDGE-TRIANGLE PREDICATES
+// (Keep all coplanar and edgeTri helper functions identical to original V2 implementation)
 // --------------------------------------------------------------------
+
 __device__ inline bool all_outside_edge_V2(
     const __int128_t Eu[3], const __int128_t Ev[3],
     const __int128_t Ou[3], const __int128_t Ov[3],
@@ -280,9 +270,6 @@ __device__ inline PairStatus coplanar_tri_tri_exact_V2(
     return PAIR_GREEN;
 }
 
-// --------------------------------------------------------------------
-// COPLANAR SEGMENT-VS-TRIANGLE (exact 2D)
-// --------------------------------------------------------------------
 __device__ inline bool point_in_or_on_tri_2d_V2(
     __int128_t px, __int128_t py,
     const __int128_t Tu[3], const __int128_t Tv[3])
@@ -365,9 +352,6 @@ __device__ inline PairStatus edgeTri_coplanar_exact_V2(
     return PAIR_NO;
 }
 
-// --------------------------------------------------------------------
-// 3D EDGE-TRIANGLE EXACT PREDICATE
-// --------------------------------------------------------------------
 __device__ inline int edgeTri_exact_V2(
     const int3_wide_V2& a, const int3_wide_V2& b,
     const int3_wide_V2& p, const int3_wide_V2& q, const int3_wide_V2& r)
@@ -391,7 +375,7 @@ __device__ inline int edgeTri_exact_V2(
 }
 
 // --------------------------------------------------------------------
-// EXACT INTEGER CLASSIFICATION V2 (fully lossless quantization)
+// EXACT INTEGER CLASSIFICATION V2
 // --------------------------------------------------------------------
 __device__ inline PairStatus classifyPairBigIntV2(
     const double3& Aa, const double3& Ab, const double3& Ac,
@@ -405,7 +389,6 @@ __device__ inline PairStatus classifyPairBigIntV2(
     double3 relB1 = { Bb.x - anchor.x, Bb.y - anchor.y, Bb.z - anchor.z };
     double3 relB2 = { Bc.x - anchor.x, Bc.y - anchor.y, Bc.z - anchor.z };
 
-    // --- EXACT DECOMPOSITION of every relative coordinate ---
     double coordVals[15] = {
         relA1.x, relA1.y, relA1.z,
         relA2.x, relA2.y, relA2.z,
@@ -430,14 +413,8 @@ __device__ inline PairStatus classifyPairBigIntV2(
             if (exp2[i] > e_max) e_max = exp2[i];
         }
     }
-    if (!any) return PAIR_YELLOW; // every relative coordinate is exactly zero
+    if (!any) return PAIR_YELLOW; 
 
-    // Deterministic exactness/overflow guard -- NOT a geometric epsilon.
-    // Coordinates end up with |value| < 2^(53 + spread). orient3d's triple
-    // product then needs roughly 3*(54+spread) bits, which must stay under
-    // the WLIMBS_V2*64 = 384-bit budget. spread <= 60 keeps that at ~342
-    // bits with margin to spare. Only pairs with genuinely huge dynamic
-    // range between their coordinates (~10^18x) ever hit this.
     const int SPREAD_CAP_V2 = 60;
     if ((e_max - e_min) > SPREAD_CAP_V2) return PAIR_YELLOW;
 
@@ -454,7 +431,6 @@ __device__ inline PairStatus classifyPairBigIntV2(
     int3_wide_V2 qB1 = { q[9], q[10], q[11] };
     int3_wide_V2 qB2 = { q[12], q[13], q[14] };
 
-    // --- CHECK 1: 0D POINT & 1D LINE COLLAPSE GUARD (now exact facts, not rounding artifacts) ---
     bool aDegenerate =
         (qA1.x == 0 && qA1.y == 0 && qA1.z == 0 &&
          qA2.x == 0 && qA2.y == 0 && qA2.z == 0);
@@ -478,14 +454,9 @@ __device__ inline PairStatus classifyPairBigIntV2(
 
     if ((wideU_is_zero_V2(nxA.mag) && wideU_is_zero_V2(nyA.mag) && wideU_is_zero_V2(nzA.mag)) ||
         (wideU_is_zero_V2(nxB.mag) && wideU_is_zero_V2(nyB.mag) && wideU_is_zero_V2(nzB.mag))) {
-        return PAIR_YELLOW; // triangle collapsed to a line
+        return PAIR_YELLOW; 
     }
 
-    // --- CHECK 2: PREDICATES ---
-    // ob0==ob1==ob2==0 below is now a genuine exact-coplanarity fact
-    // (the quantization is lossless), so there's no spurious-coplanarity
-    // artifact to filter -- the old double-precision distance re-check is
-    // gone.
     int ob0 = orient3d_exact_V2(qA0, qA1, qA2, qB0);
     int ob1 = orient3d_exact_V2(qA0, qA1, qA2, qB1);
     int ob2 = orient3d_exact_V2(qA0, qA1, qA2, qB2);
@@ -504,7 +475,6 @@ __device__ inline PairStatus classifyPairBigIntV2(
     }
     if ((oa0 > 0 && oa1 > 0 && oa2 > 0) || (oa0 < 0 && oa1 < 0 && oa2 < 0)) return PAIR_NO;
 
-    // --- CHECK 3: EDGE-TRIANGLE PREDICATES ---
     int r;
     r = edgeTri_exact_V2(qA0, qA1, qB0, qB1, qB2); if (r == PAIR_GREEN) return PAIR_GREEN;
     r = edgeTri_exact_V2(qA1, qA2, qB0, qB1, qB2); if (r == PAIR_GREEN) return PAIR_GREEN;
@@ -523,9 +493,9 @@ __device__ inline PairStatus classifyPairBigIntV2(
 __global__ void evaluateGeometricPairsKernelBigInt_KernelV2(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs)
 {
@@ -536,13 +506,13 @@ __global__ void evaluateGeometricPairsKernelBigInt_KernelV2(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    double3 Aa = load_double3_V2(&dVertsA[idxA.x]);
-    double3 Ab = load_double3_V2(&dVertsA[idxA.y]);
-    double3 Ac = load_double3_V2(&dVertsA[idxA.z]);
+    double3 Aa = load_interval_as_double3_V2(&dVertsA[idxA.x]);
+    double3 Ab = load_interval_as_double3_V2(&dVertsA[idxA.y]);
+    double3 Ac = load_interval_as_double3_V2(&dVertsA[idxA.z]);
 
-    double3 Ba = load_double3_V2(&dVertsB[idxB.x]);
-    double3 Bb = load_double3_V2(&dVertsB[idxB.y]);
-    double3 Bc = load_double3_V2(&dVertsB[idxB.z]);
+    double3 Ba = load_interval_as_double3_V2(&dVertsB[idxB.x]);
+    double3 Bb = load_interval_as_double3_V2(&dVertsB[idxB.y]);
+    double3 Bc = load_interval_as_double3_V2(&dVertsB[idxB.z]);
 
     PairStatus status = classifyPairBigIntV2(Aa, Ab, Ac, Ba, Bb, Bc);
     dPairStatuses[tid] = (int)status;
@@ -554,9 +524,9 @@ __global__ void evaluateGeometricPairsKernelBigInt_KernelV2(
 extern "C" void evaluateGeometricPairsKernelBigIntV2(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream)

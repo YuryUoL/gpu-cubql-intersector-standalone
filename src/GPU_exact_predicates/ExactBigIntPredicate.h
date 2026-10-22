@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <vector_types.h>
 #include "PairStatus.h"
+#include "GPUInterval.h" // Include your interval definitions
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,9 +13,9 @@ extern "C" {
 void evaluateGeometricPairsKernelBigIntV2(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const double3* dVertsA,
+    const vec3IntervalDouble* dVertsA,
     const uint3* dIndicesA,
-    const double3* dVertsB,
+    const vec3IntervalDouble* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream = 0

@@ -396,22 +396,22 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
                                         totalYellow, stream);
         }
 
-        else
+        else if (exactPredicateComputeMode == 2)
         {
           evaluateAndCompactPairsDoubleFull(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
                                             totalYellow, stream);
         }
 
-          //    else if (exactPredicateComputeMode == 2)
-     //   {
-     //     evaluateGeometricPairsKernelBigInt(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
-                         //                    totalYellow, stream);
-    //    }
-    //    else if (exactPredicateComputeMode == 3)
-    //    {
-     //     evaluateGeometricPairsKernelBigIntV2(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
-                              //                 totalYellow, stream);
-      //  }
+          else if (exactPredicateComputeMode == 3)
+        {
+          evaluateGeometricPairsKernelBigInt(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
+                                             totalYellow, stream);
+        }
+       else 
+        {
+         evaluateGeometricPairsKernelBigIntV2(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
+                                               totalYellow, stream);
+       }
 
         CUBQL_CUDA_CALL(EventRecord(evDoubleEnd, stream));
 

@@ -31,6 +31,8 @@
 #include "CPU/CgalDefinitions.h"   // Mesh, Point3
 #include "common/ExecutionStats.h"  // ExecutionStats
 
+
+
 class KernelBVHController {
 public:
     KernelBVHController();

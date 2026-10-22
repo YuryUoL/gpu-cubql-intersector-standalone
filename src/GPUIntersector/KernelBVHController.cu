@@ -18,6 +18,9 @@
 #include <thrust/system/cuda/execution_policy.h>
 #include <thrust/unique.h>
 
+#include "GPU_exact_predicates/GPUInterval.h"
+
+
 // Intel TBB Headers
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_invoke.h>
@@ -111,19 +114,19 @@ struct KernelBVHController::Impl
   const double3 *m_hVertsB = nullptr;
   const uint3 *m_hIndicesB = nullptr;
 
-  // Persistent Raw GPU & CPU Buffers for Mesh A
-  double3 *m_dVertsA = nullptr;      // Active transformed vertices
-  double3 *m_dVertsAOrig = nullptr;  // Pristine baseline vertices
-  uint3 *m_dIndicesA = nullptr;      // Triangle vertex indices
-  float *m_dVertErrorsA = nullptr;   // Precision error bounds
-  std::vector<Point3> m_origPointsA; // Baseline CGAL host points
+// Persistent Raw GPU & CPU Buffers for Mesh A (Updated to vec3IntervalDouble)
+  vec3IntervalDouble *m_dVertsA = nullptr;      
+  vec3IntervalDouble *m_dVertsAOrig = nullptr;  
+  uint3 *m_dIndicesA = nullptr;      
+  float *m_dVertErrorsA = nullptr;   
+  std::vector<Point3> m_origPointsA; 
 
-  // Persistent Raw GPU & CPU Buffers for Mesh B
-  double3 *m_dVertsB = nullptr;      // Active transformed vertices
-  double3 *m_dVertsBOrig = nullptr;  // Pristine baseline vertices
-  uint3 *m_dIndicesB = nullptr;      // Triangle vertex indices
-  float *m_dVertErrorsB = nullptr;   // Precision error bounds
-  std::vector<Point3> m_origPointsB; // Baseline CGAL host points
+  // Persistent Raw GPU & CPU Buffers for Mesh B (Updated to vec3IntervalDouble)
+  vec3IntervalDouble *m_dVertsB = nullptr;      
+  vec3IntervalDouble *m_dVertsBOrig = nullptr;  
+  uint3 *m_dIndicesB = nullptr;      
+  float *m_dVertErrorsB = nullptr;   
+  std::vector<Point3> m_origPointsB;
 
   // BVH Structures (cuBQL v2_2 format)
   cuBQL::bvh3f m_bvhA;
@@ -331,30 +334,30 @@ void KernelBVHController::setTransformBoth(double3 rotDegA,
     cudaEventRecord(evStartGPU, m_impl->m_stream);
 
     // 1. Transform Vertices on GPU
-    cudaEventRecord(evStartTV, m_impl->m_stream);
+   cudaEventRecord(evStartTV, m_impl->m_stream);
     if (runA)
     {
       Mat3x3 RA = makeRotationMatrixDeg(rotDegA.x, rotDegA.y, rotDegA.z);
       double3 cA = make_double3(CGAL::to_double(m_impl->m_centerA.x()), CGAL::to_double(m_impl->m_centerA.y()), CGAL::to_double(m_impl->m_centerA.z()));
-      launchTransformVertices(m_impl->m_dVertsA, m_impl->m_dVertsAOrig, m_impl->m_numVertsA, RA, cA, transA, m_impl->m_stream);
+      launchTransformVerticesInterval(m_impl->m_dVertsA, m_impl->m_dVertsAOrig, m_impl->m_numVertsA, RA, cA, transA, m_impl->m_stream);
     }
     if (runB)
     {
       Mat3x3 RB = makeRotationMatrixDeg(rotDegB.x, rotDegB.y, rotDegB.z);
       double3 cB = make_double3(CGAL::to_double(m_impl->m_centerB.x()), CGAL::to_double(m_impl->m_centerB.y()), CGAL::to_double(m_impl->m_centerB.z()));
-      launchTransformVertices(m_impl->m_dVertsB, m_impl->m_dVertsBOrig, m_impl->m_numVertsB, RB, cB, transB, m_impl->m_stream);
+      launchTransformVerticesInterval(m_impl->m_dVertsB, m_impl->m_dVertsBOrig, m_impl->m_numVertsB, RB, cB, transB, m_impl->m_stream);
     }
     cudaEventRecord(evStopTV, m_impl->m_stream);
 
-    // 2. Generate Bounding Boxes
+    // 2. Generate Bounding Boxes (Using Interval Box Generator)
     cudaEventRecord(evStartAssemble, m_impl->m_stream);
     if (runA)
     {
-      launchGenerateBoxesTris(m_impl->m_dBoxesA, m_impl->m_dVertsA, m_impl->m_dIndicesA, m_impl->m_numTrianglesA, m_impl->m_stream);
+      launchGenerateBoxesTrisInterval(m_impl->m_dBoxesA, m_impl->m_dVertsA, m_impl->m_dIndicesA, m_impl->m_numTrianglesA, m_impl->m_stream);
     }
     if (runB)
     {
-      launchGenerateBoxesTris(m_impl->m_dBoxesB, m_impl->m_dVertsB, m_impl->m_dIndicesB, m_impl->m_numTrianglesB, m_impl->m_stream);
+      launchGenerateBoxesTrisInterval(m_impl->m_dBoxesB, m_impl->m_dVertsB, m_impl->m_dIndicesB, m_impl->m_numTrianglesB, m_impl->m_stream);
     }
     cudaEventRecord(evStopAssemble, m_impl->m_stream);
 
@@ -500,43 +503,50 @@ void KernelBVHController::construct(Mesh &meshAcpu,
 
   CUBQL_CUDA_CALL(EventRecord(evAllocStart, m_impl->m_stream));
 
-  // Allocate and upload Mesh A GPU buffers
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsA, m_impl->m_numVertsA * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsA, hVertsA, m_impl->m_numVertsA * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
-
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsAOrig, m_impl->m_numVertsA * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsAOrig, hVertsA, m_impl->m_numVertsA * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+// Allocate Mesh A interval device buffers
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsA, m_impl->m_numVertsA * sizeof(vec3IntervalDouble), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsAOrig, m_impl->m_numVertsA * sizeof(vec3IntervalDouble), m_impl->m_stream));
+  
+  double3* d_tempVertsA = nullptr;
+  CUBQL_CUDA_CALL(MallocAsync((void **)&d_tempVertsA, m_impl->m_numVertsA * sizeof(double3), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MemcpyAsync(d_tempVertsA, hVertsA, m_impl->m_numVertsA * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+  
+  int blk = 256;
+  int gridA = (m_impl->m_numVertsA + blk - 1) / blk;
+  initPointIntervalsKernel<<<gridA, blk, 0, m_impl->m_stream>>>(d_tempVertsA, m_impl->m_dVertsA, m_impl->m_numVertsA);
+  initPointIntervalsKernel<<<gridA, blk, 0, m_impl->m_stream>>>(d_tempVertsA, m_impl->m_dVertsAOrig, m_impl->m_numVertsA);
+  CUBQL_CUDA_CALL(FreeAsync(d_tempVertsA, m_impl->m_stream));
 
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dIndicesA, m_impl->m_numTrianglesA * sizeof(uint3), m_impl->m_stream));
   CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dIndicesA, hIndicesA, m_impl->m_numTrianglesA * sizeof(uint3), cudaMemcpyHostToDevice, m_impl->m_stream));
-
   m_impl->m_dVertErrorsA = nullptr;
 
-  // Allocate and upload Mesh B GPU buffers
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsB, m_impl->m_numVertsB * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsB, hVertsB, m_impl->m_numVertsB * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+  // Allocate Mesh B interval device buffers
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsB, m_impl->m_numVertsB * sizeof(vec3IntervalDouble), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsBOrig, m_impl->m_numVertsB * sizeof(vec3IntervalDouble), m_impl->m_stream));
 
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsBOrig, m_impl->m_numVertsB * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsBOrig, hVertsB, m_impl->m_numVertsB * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+  double3* d_tempVertsB = nullptr;
+  CUBQL_CUDA_CALL(MallocAsync((void **)&d_tempVertsB, m_impl->m_numVertsB * sizeof(double3), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MemcpyAsync(d_tempVertsB, hVertsB, m_impl->m_numVertsB * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+
+  int gridB = (m_impl->m_numVertsB + blk - 1) / blk;
+  initPointIntervalsKernel<<<gridB, blk, 0, m_impl->m_stream>>>(d_tempVertsB, m_impl->m_dVertsB, m_impl->m_numVertsB);
+  initPointIntervalsKernel<<<gridB, blk, 0, m_impl->m_stream>>>(d_tempVertsB, m_impl->m_dVertsBOrig, m_impl->m_numVertsB);
+  CUBQL_CUDA_CALL(FreeAsync(d_tempVertsB, m_impl->m_stream));
 
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dIndicesB, m_impl->m_numTrianglesB * sizeof(uint3), m_impl->m_stream));
   CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dIndicesB, hIndicesB, m_impl->m_numTrianglesB * sizeof(uint3), cudaMemcpyHostToDevice, m_impl->m_stream));
-
   m_impl->m_dVertErrorsB = nullptr;
 
   // Allocate AABB bounding box buffers
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dBoxesA, m_impl->m_numTrianglesA * sizeof(cuBQL::box3f), m_impl->m_stream));
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dBoxesB, m_impl->m_numTrianglesB * sizeof(cuBQL::box3f), m_impl->m_stream));
 
-  // Compute initial primitive bounding boxes
-  generateBoxesTrisKernel<<<cuBQL::divRoundUp(m_impl->m_numTrianglesA, 256), 256, 0, m_impl->m_stream>>>(
-      m_impl->m_dBoxesA, m_impl->m_dVertsA, m_impl->m_dIndicesA, m_impl->m_numTrianglesA);
-
-  generateBoxesTrisKernel<<<cuBQL::divRoundUp(m_impl->m_numTrianglesB, 256), 256, 0, m_impl->m_stream>>>(
-      m_impl->m_dBoxesB, m_impl->m_dVertsB, m_impl->m_dIndicesB, m_impl->m_numTrianglesB);
+  // Compute initial primitive bounding boxes via interval box generator
+  launchGenerateBoxesTrisInterval(m_impl->m_dBoxesA, m_impl->m_dVertsA, m_impl->m_dIndicesA, m_impl->m_numTrianglesA, m_impl->m_stream);
+  launchGenerateBoxesTrisInterval(m_impl->m_dBoxesB, m_impl->m_dVertsB, m_impl->m_dIndicesB, m_impl->m_numTrianglesB, m_impl->m_stream);
 
   CUBQL_CUDA_CALL(EventRecord(evAllocStop, m_impl->m_stream));
-
   // Allocate Thrust dynamic tracking vectors
   const double tThrustInitStart = cuBQL::getCurrentTime();
   const uint32_t maxNodesA = 2 * m_impl->m_numTrianglesA;
@@ -855,37 +865,45 @@ void KernelBVHController::reconstructGPU(ExecutionStats &stats)
   cuBQL::BuildConfig buildConfig;
   buildConfig.makeLeafThreshold = m_impl->m_leafThreshold;
 
-  const double tReconstructStart = cuBQL::getCurrentTime();
+ const double tReconstructStart = cuBQL::getCurrentTime();
 
-  // Re-allocate & copy Mesh A
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsA, m_impl->m_numVertsA * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsA, m_impl->m_hVertsA, m_impl->m_numVertsA * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
-
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsAOrig, m_impl->m_numVertsA * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsAOrig, m_impl->m_hVertsA, m_impl->m_numVertsA * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+  // Re-allocate & copy Mesh A intervals
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsA, m_impl->m_numVertsA * sizeof(vec3IntervalDouble), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsAOrig, m_impl->m_numVertsA * sizeof(vec3IntervalDouble), m_impl->m_stream));
+  
+  double3* d_tempVertsA = nullptr;
+  CUBQL_CUDA_CALL(MallocAsync((void **)&d_tempVertsA, m_impl->m_numVertsA * sizeof(double3), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MemcpyAsync(d_tempVertsA, m_impl->m_hVertsA, m_impl->m_numVertsA * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+  int blk = 256;
+  int gridA = (m_impl->m_numVertsA + blk - 1) / blk;
+  initPointIntervalsKernel<<<gridA, blk, 0, m_impl->m_stream>>>(d_tempVertsA, m_impl->m_dVertsA, m_impl->m_numVertsA);
+  initPointIntervalsKernel<<<gridA, blk, 0, m_impl->m_stream>>>(d_tempVertsA, m_impl->m_dVertsAOrig, m_impl->m_numVertsA);
+  CUBQL_CUDA_CALL(FreeAsync(d_tempVertsA, m_impl->m_stream));
 
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dIndicesA, m_impl->m_numTrianglesA * sizeof(uint3), m_impl->m_stream));
   CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dIndicesA, m_impl->m_hIndicesA, m_impl->m_numTrianglesA * sizeof(uint3), cudaMemcpyHostToDevice, m_impl->m_stream));
 
-  // Re-allocate & copy Mesh B
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsB, m_impl->m_numVertsB * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsB, m_impl->m_hVertsB, m_impl->m_numVertsB * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
-
-  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsBOrig, m_impl->m_numVertsB * sizeof(double3), m_impl->m_stream));
-  CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dVertsBOrig, m_impl->m_hVertsB, m_impl->m_numVertsB * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+  // Re-allocate & copy Mesh B intervals
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsB, m_impl->m_numVertsB * sizeof(vec3IntervalDouble), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dVertsBOrig, m_impl->m_numVertsB * sizeof(vec3IntervalDouble), m_impl->m_stream));
+  
+  double3* d_tempVertsB = nullptr;
+  CUBQL_CUDA_CALL(MallocAsync((void **)&d_tempVertsB, m_impl->m_numVertsB * sizeof(double3), m_impl->m_stream));
+  CUBQL_CUDA_CALL(MemcpyAsync(d_tempVertsB, m_impl->m_hVertsB, m_impl->m_numVertsB * sizeof(double3), cudaMemcpyHostToDevice, m_impl->m_stream));
+  int gridB = (m_impl->m_numVertsB + blk - 1) / blk;
+  initPointIntervalsKernel<<<gridB, blk, 0, m_impl->m_stream>>>(d_tempVertsB, m_impl->m_dVertsB, m_impl->m_numVertsB);
+  initPointIntervalsKernel<<<gridB, blk, 0, m_impl->m_stream>>>(d_tempVertsB, m_impl->m_dVertsBOrig, m_impl->m_numVertsB);
+  CUBQL_CUDA_CALL(FreeAsync(d_tempVertsB, m_impl->m_stream));
 
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dIndicesB, m_impl->m_numTrianglesB * sizeof(uint3), m_impl->m_stream));
   CUBQL_CUDA_CALL(MemcpyAsync(m_impl->m_dIndicesB, m_impl->m_hIndicesB, m_impl->m_numTrianglesB * sizeof(uint3), cudaMemcpyHostToDevice, m_impl->m_stream));
 
-  // Compute bounding boxes
+  // Compute bounding boxes via interval box generator
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dBoxesA, m_impl->m_numTrianglesA * sizeof(cuBQL::box3f), m_impl->m_stream));
   CUBQL_CUDA_CALL(MallocAsync((void **)&m_impl->m_dBoxesB, m_impl->m_numTrianglesB * sizeof(cuBQL::box3f), m_impl->m_stream));
 
-  generateBoxesTrisKernel<<<cuBQL::divRoundUp(m_impl->m_numTrianglesA, 256), 256, 0, m_impl->m_stream>>>(
-      m_impl->m_dBoxesA, m_impl->m_dVertsA, m_impl->m_dIndicesA, m_impl->m_numTrianglesA);
-
-  generateBoxesTrisKernel<<<cuBQL::divRoundUp(m_impl->m_numTrianglesB, 256), 256, 0, m_impl->m_stream>>>(
-      m_impl->m_dBoxesB, m_impl->m_dVertsB, m_impl->m_dIndicesB, m_impl->m_numTrianglesB);
+  launchGenerateBoxesTrisInterval(m_impl->m_dBoxesA, m_impl->m_dVertsA, m_impl->m_dIndicesA, m_impl->m_numTrianglesA, m_impl->m_stream);
+  launchGenerateBoxesTrisInterval(m_impl->m_dBoxesB, m_impl->m_dVertsB, m_impl->m_dIndicesB, m_impl->m_numTrianglesB, m_impl->m_stream);
 
   // Resize Thrust vectors
   const uint32_t maxNodesA = 2 * m_impl->m_numTrianglesA;

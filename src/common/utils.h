@@ -5,6 +5,7 @@
 #include "samples/common/loadOBJ.h"
 #include "cuBQL/bvh.h"
 #include "GPU_exact_predicates/TriangleDouble.h"
+#include "GPU_exact_predicates/GPUInterval.h" // <-- Include interval types
 
 // =============================================================================
 // Kernel Declarations (float3 - Legacy / Float Pipeline)
@@ -168,5 +169,41 @@ void launchGenerateBoxesTris(cuBQL::box3f* dBoxes,
                              const uint3* dIndices, // Or const uint3* depending on your types
                              int numTriangles,
                              cudaStream_t stream = 0);
+
+
+                 __global__ void initPointIntervalsKernel(
+    const double3* __restrict__ inVerts,
+    vec3IntervalDouble* __restrict__ outIntervals,
+    int numVerts);
+
+__global__ void transformVerticesIntervalKernel(
+    vec3IntervalDouble* dVertsOut, 
+    const vec3IntervalDouble* dVertsOrig, 
+    int numVerts, 
+    Mat3x3 R, 
+    double3 center, 
+    double3 trans);
+
+void launchTransformVerticesInterval(
+    vec3IntervalDouble* dVertsOut,
+    const vec3IntervalDouble* dVertsOrig,
+    int numVerts,
+    Mat3x3 R,
+    double3 center,
+    double3 trans,
+    cudaStream_t stream = 0);
+
+__global__ void generateBoxesTrisIntervalKernel(
+    cuBQL::box3f* __restrict__ dBoxes,
+    const vec3IntervalDouble* __restrict__ dVerts,
+    const uint3* __restrict__ dIndices,
+    int numTriangles);
+
+void launchGenerateBoxesTrisInterval(
+    cuBQL::box3f* dBoxes,
+    const vec3IntervalDouble* dVerts,
+    const uint3* dIndices,
+    int numTriangles,
+    cudaStream_t stream = 0);          
 
 #endif // UTILS_H

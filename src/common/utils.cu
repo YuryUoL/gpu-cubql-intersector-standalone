@@ -438,3 +438,158 @@ void launchTransformVertices(double3* dVertsOut,
   int gridSize = (numVerts + blockSize - 1) / blockSize;
   transformVerticesKernel<<<gridSize, blockSize, 0, stream>>>(dVertsOut, dVertsOrig, numVerts, R, center, trans);
 }
+
+__global__ void initPointIntervalsKernel(
+    const double3* __restrict__ inVerts,
+    vec3IntervalDouble* __restrict__ outIntervals,
+    int numVerts)
+{
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  if (idx >= numVerts) return;
+  double3 p = inVerts[idx];
+  
+  // Aggregate initialization directly into vec3IntervalDouble
+  outIntervals[idx] = vec3IntervalDouble{
+      {p.x, p.x},
+      {p.y, p.y},
+      {p.z, p.z}
+  };
+}
+
+__device__ inline vec3IntervalDouble transformIntervalPoint(
+    const vec3IntervalDouble& v, const Mat3x3& R, double3 center, double3 trans)
+{
+  // 1. Extract center (midpoint) and radius (half-extent) of the interval box
+  double3 m = make_double3(
+      (v.x.lo + v.x.hi) * 0.5,
+      (v.y.lo + v.y.hi) * 0.5,
+      (v.z.lo + v.z.hi) * 0.5
+  );
+  double3 r = make_double3(
+      (v.x.hi - v.x.lo) * 0.5,
+      (v.y.hi - v.y.lo) * 0.5,
+      (v.z.hi - v.z.lo) * 0.5
+  );
+
+  // 2. Translate relative to rotation pivot
+  double x = m.x - center.x;
+  double y = m.y - center.y;
+  double z = m.z - center.z;
+
+  // 3. Transform center using rotation matrix
+  double rx = R.m[0][0] * x + R.m[0][1] * y + R.m[0][2] * z;
+  double ry = R.m[1][0] * x + R.m[1][1] * y + R.m[1][2] * z;
+  double rz = R.m[2][0] * x + R.m[2][1] * y + R.m[2][2] * z;
+
+  double3 newCenter = make_double3(rx + center.x + trans.x, ry + center.y + trans.y, rz + center.z + trans.z);
+
+  // 4. Propagate radius through absolute rotation matrix (|R| * r)
+  double ar00 = fabs(R.m[0][0]), ar01 = fabs(R.m[0][1]), ar02 = fabs(R.m[0][2]);
+  double ar10 = fabs(R.m[1][0]), ar11 = fabs(R.m[1][1]), ar12 = fabs(R.m[1][2]);
+  double ar20 = fabs(R.m[2][0]), ar21 = fabs(R.m[2][1]), ar22 = fabs(R.m[2][2]);
+
+  double3 newR = make_double3(
+      ar00 * r.x + ar01 * r.y + ar02 * r.z,
+      ar10 * r.x + ar11 * r.y + ar12 * r.z,
+      ar20 * r.x + ar21 * r.y + ar22 * r.z
+  );
+
+  // 5. Add a tiny safety margin to absorb GPU vs CPU FMA rounding differences
+  constexpr double GPU_SAFETY_EPS = 1.0e-14;
+  newR.x += GPU_SAFETY_EPS;
+  newR.y += GPU_SAFETY_EPS;
+  newR.z += GPU_SAFETY_EPS;
+
+  // Aggregate initialization for transformed interval box
+  return vec3IntervalDouble{
+      {newCenter.x - newR.x, newCenter.x + newR.x},
+      {newCenter.y - newR.y, newCenter.y + newR.y},
+      {newCenter.z - newR.z, newCenter.z + newR.z}
+  };
+}
+
+__global__ void transformVerticesIntervalKernel(
+    vec3IntervalDouble* dVertsOut, 
+    const vec3IntervalDouble* dVertsOrig, 
+    int numVerts, 
+    Mat3x3 R, 
+    double3 center, 
+    double3 trans) 
+{
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  if (idx >= numVerts) return;
+  dVertsOut[idx] = transformIntervalPoint(dVertsOrig[idx], R, center, trans);
+}
+
+void launchTransformVerticesInterval(
+    vec3IntervalDouble* dVertsOut,
+    const vec3IntervalDouble* dVertsOrig,
+    int numVerts,
+    Mat3x3 R,
+    double3 center,
+    double3 trans,
+    cudaStream_t stream) 
+{
+  if (numVerts <= 0) return;
+
+  bool isIdentityRotation = (R.m[0][0] == 1.0 && R.m[0][1] == 0.0 && R.m[0][2] == 0.0 &&
+                             R.m[1][0] == 0.0 && R.m[1][1] == 1.0 && R.m[1][2] == 0.0 &&
+                             R.m[2][0] == 0.0 && R.m[2][1] == 0.0 && R.m[2][2] == 1.0);
+  bool isZeroTranslation = (trans.x == 0.0 && trans.y == 0.0 && trans.z == 0.0);
+
+  if (isIdentityRotation && isZeroTranslation) {
+    if (dVertsOut != dVertsOrig) {
+      CUBQL_CUDA_CALL(MemcpyAsync(dVertsOut, dVertsOrig, numVerts * sizeof(vec3IntervalDouble), cudaMemcpyDeviceToDevice, stream));
+    }
+    return;
+  }
+
+  int blockSize = 256;
+  int gridSize = (numVerts + blockSize - 1) / blockSize;
+  transformVerticesIntervalKernel<<<gridSize, blockSize, 0, stream>>>(dVertsOut, dVertsOrig, numVerts, R, center, trans);
+}
+
+__global__ void generateBoxesTrisIntervalKernel(
+    cuBQL::box3f* __restrict__ dBoxes,
+    const vec3IntervalDouble* __restrict__ dVerts,
+    const uint3* __restrict__ dIndices,
+    int numTriangles) 
+{
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  if (idx >= numTriangles) return;
+
+  uint3 triIdx = dIndices[idx];
+
+  vec3IntervalDouble v0 = dVerts[triIdx.x];
+  vec3IntervalDouble v1 = dVerts[triIdx.y];
+  vec3IntervalDouble v2 = dVerts[triIdx.z];
+
+  // Worst-case bounding box encompassing full intervals (min of lo, max of hi)
+  double min_x = fmin(fmin(v0.x.lo, v1.x.lo), v2.x.lo);
+  double max_x = fmax(fmax(v0.x.hi, v1.x.hi), v2.x.hi);
+
+  double min_y = fmin(fmin(v0.y.lo, v1.y.lo), v2.y.lo);
+  double max_y = fmax(fmax(v0.y.hi, v1.y.hi), v2.y.hi);
+
+  double min_z = fmin(fmin(v0.z.lo, v1.z.lo), v2.z.lo);
+  double max_z = fmax(fmax(v0.z.hi, v1.z.hi), v2.z.hi);
+
+  cuBQL::box3f box;
+  box.lower = cuBQL::vec3f(static_cast<float>(min_x), static_cast<float>(min_y), static_cast<float>(min_z));
+  box.upper = cuBQL::vec3f(static_cast<float>(max_x), static_cast<float>(max_y), static_cast<float>(max_z));
+
+  dBoxes[idx] = box;
+}
+
+void launchGenerateBoxesTrisInterval(
+    cuBQL::box3f* dBoxes,
+    const vec3IntervalDouble* dVerts,
+    const uint3* dIndices,
+    int numTriangles,
+    cudaStream_t stream) 
+{
+  if (numTriangles <= 0) return;
+  int blockSize = 256;
+  int gridSize = (numTriangles + blockSize - 1) / blockSize;
+  generateBoxesTrisIntervalKernel<<<gridSize, blockSize, 0, stream>>>(dBoxes, dVerts, dIndices, numTriangles);
+}

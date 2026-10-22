@@ -1231,6 +1231,10 @@ void cmdTestBVH(ApplicationState &app, std::istringstream &iss)
   std::cout << "  -----------------------------------------------------\n";
   std::cout << "  Exact Intersections    : " << outFinalCount << "\n";
   std::cout << "  AABB Candidate Pairs   : " << testStats.finalAabbCandidatePairs << "\n";
+  // Added breakdown for Green, Yellow, and Orange list counts:
+  std::cout << "  Green List (Confirmed) : " << testStats.loopTracker.confirmedGreenPairs << "\n";
+  std::cout << "  Yellow List (Confirmed): " << testStats.loopTracker.confirmedYellowPairs << "\n";
+  std::cout << "  Orange List (Confirmed): " << testStats.loopTracker.confirmedOrangePairs << "\n";
   std::cout << "=======================================================\n\n";
 }
 
@@ -1482,8 +1486,8 @@ int main(int argc, char **argv)
                        std::cout << "  Mode 0 : Float predicates -> CPU\n";
                        std::cout << "  Mode 1 : Float predicates -> Simulated double -> CPU\n";
                        std::cout << "  Mode 2 : Float predicates -> Real double -> CPU\n";
-                       std::cout << "  Mode 3 (Disabled for now): Float predicates -> Inexact Big integer quantization (Experimental)\n";
-                       std::cout << "  Mode 4 (Disabled for now): Float predicates -> Exact Big integer quantization -> CPU (Experimental)\n";
+                       std::cout << "  Mode 3 : Float predicates -> Inexact Big integer quantization (Experimental)\n";
+                       std::cout << "  Mode 4 : Float predicates -> Exact Big integer quantization -> CPU (Experimental)\n";
                        std::cout << "=======================================================\n\n";
                      });
 
