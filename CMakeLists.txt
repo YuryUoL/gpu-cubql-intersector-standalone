@@ -82,8 +82,9 @@ function(configure_geometry_target TARGET_NAME)
 
     target_compile_options(${TARGET_NAME} PRIVATE 
         $<$<COMPILE_LANGUAGE:CXX>:-O3 -march=native -DNDEBUG>
-        $<$<COMPILE_LANGUAGE:CUDA>:-O3 -DNDEBUG --use_fast_math>
+        $<$<COMPILE_LANGUAGE:CUDA>:-O3 -DNDEBUG>
     )
+    # --use_fast_math
 
     # Includes local headers, internal cubql third-party headers, and external cuBQL
     target_include_directories(${TARGET_NAME} PRIVATE

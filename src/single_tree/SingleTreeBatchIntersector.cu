@@ -23,6 +23,7 @@
 // Infrastructure & CPU Helpers (relative to src/single_tree/)
 #include "common/TargetStatus.h"
 #include "CPU/YellowFilter.h"
+#include "CPU/DebugFallbackCollector.h"
 
 // Helper kernel to box raw double3 points into rigorous zero-width point intervals
 __global__ void convertDouble3ToIntervalsKernel(
@@ -119,6 +120,7 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
     int exactPredicateComputeMode,
     cudaStream_t stream)
 {
+  //DebugFallbackCollector::clear();
   double tTotalStart = cuBQL::getCurrentTime();
 
   uint64_t finalCandidatePairs = 0;
@@ -324,6 +326,30 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
 
     CUBQL_CUDA_CALL(EventRecord(evAabbEnd, stream));
 
+    //    if (exactPredicateComputeMode == 5)
+    // {
+    //   CUBQL_CUDA_CALL(EventRecord(evCompact2Start, stream));
+    //   tracker.confirmedOrangePairs += totalChunkPairs;
+    //   std::vector<int2> hChunkOrange(totalChunkPairs);
+    //   CUBQL_CUDA_CALL(MemcpyAsync(hChunkOrange.data(), d_candidatePairs, totalChunkPairs * sizeof(int2), cudaMemcpyDeviceToHost, stream));
+    //   CUBQL_CUDA_CALL(EventRecord(evCompact2End, stream));
+    //   CUBQL_CUDA_CALL(StreamSynchronize(stream));
+
+    //   // Run CPU Exact Fallback directly on all AABB candidates
+    //   double tCpuStart = cuBQL::getCurrentTime();
+    //   size_t confirmedOranges =
+    //       filterYellowPairsTBB(meshAcpu, meshBcpu, hChunkOrange.data(), hChunkOrange.size(), h_finalBuffer + hostCount,
+    //                            m_centerA, m_rotA, m_transA, m_centerB, m_rotB, m_transB);
+    //   tracker.CPUPredicates += (cuBQL::getCurrentTime() - tCpuStart) * 1000.0;
+    //   hostCount += confirmedOranges;
+
+    //   // Cleanup chunk resources and proceed to next batch
+    //   CUBQL_CUDA_CALL(FreeAsync(d_candidatePairs, stream));
+    //   CUBQL_CUDA_CALL(StreamSynchronize(stream));
+    //   continue;
+    // }
+
+
     // ----------------------------------------------------------------
     // DIRECT DOUBLE-PRECISION GPU PREDICATES EVALUATION
     // ----------------------------------------------------------------
@@ -495,6 +521,7 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
     // ----------------------------------------------------------------
     if (!hChunkOrange.empty())
     {
+     // DebugFallbackCollector::addPairs(hChunkOrange.data(), hChunkOrange.size());
       double tCpuStart = cuBQL::getCurrentTime();
       size_t confirmedOranges =
           filterYellowPairsTBB(meshAcpu, meshBcpu, hChunkOrange.data(), hChunkOrange.size(), h_finalBuffer + hostCount,

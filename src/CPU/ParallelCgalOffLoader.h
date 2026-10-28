@@ -21,6 +21,7 @@
 // CUDA Vector Types (for double3 and uint3)
 #include <vector_types.h>
 #include "CgalDefinitions.h"
+#include "RobustOffLoader.h"
 
 // CGAL Surface Mesh
 //#include <CGAL/Surface_mesh.h>
@@ -160,16 +161,27 @@ inline void buildCgalMeshFromBuffers(const std::vector<double3>& verts,
 }
 
 template <typename Mesh, typename Point3>
-inline bool loadOffToCgalMesh(const std::string& filepath,
-                              Mesh& mesh,
-                              std::vector<uint3>& outIndices) 
+inline bool loadOffToCgalMesh(const std::string& filepath, Mesh& mesh, std::vector<uint3>& outIndices)
 {
-  std::vector<double3> tempDoubleVerts;
-  if (!loadOffFastTBB<Point3>(filepath, tempDoubleVerts, outIndices)) {
-    return false;
+  std::vector<double3> verts;
+  if (!loadOffFastTBB<Point3>(filepath, verts, outIndices)) return false;
+
+  mesh.clear();
+  mesh.reserve(verts.size(), outIndices.size() * 3, outIndices.size());
+  std::vector<typename Mesh::Vertex_index> vh(verts.size());
+  for (size_t i = 0; i < verts.size(); ++i)
+    vh[i] = mesh.add_vertex(Point3(verts[i].x, verts[i].y, verts[i].z));
+
+  size_t rejected = 0;
+  for (const auto& t : outIndices) {
+    auto f = mesh.add_face(vh[t.x], vh[t.y], vh[t.z]);
+    if (f == Mesh::null_face()) f = mesh.add_face(vh[t.x], vh[t.z], vh[t.y]);
+    if (f == Mesh::null_face()) ++rejected;
   }
-  buildCgalMeshFromBuffers<Mesh, Point3>(tempDoubleVerts, outIndices, mesh);
-  return true; // tempDoubleVerts is deallocated right here!
+  if (rejected) std::cerr << "[ParallelIO] " << rejected << " faces rejected by add_face; re-deriving indices.\n";
+
+  std::vector<double3> unused;
+  return RobustIO::deriveBuffersFromMesh(mesh, unused, outIndices);  // GPU rows == CGAL faces
 }
 
 } // namespace ParallelIO

@@ -233,15 +233,35 @@ __global__ void generateBoxesTrisKernel(cuBQL::box3f* __restrict__ dBoxes,
   float3 b = make_float3(static_cast<float>(p1.x), static_cast<float>(p1.y), static_cast<float>(p1.z));
   float3 c = make_float3(static_cast<float>(p2.x), static_cast<float>(p2.y), static_cast<float>(p2.z));
 
-  // Compute AABB
-  cuBQL::box3f box;
-  box.lower = cuBQL::vec3f(fminf(fminf(a.x, b.x), c.x),
-                           fminf(fminf(a.y, b.y), c.y),
-                           fminf(fminf(a.z, b.z), c.z));
+  // Compute AABB bounds
+  float min_x = fminf(fminf(a.x, b.x), c.x);
+  float max_x = fmaxf(fmaxf(a.x, b.x), c.x);
+  float min_y = fminf(fminf(a.y, b.y), c.y);
+  float max_y = fmaxf(fmaxf(a.y, b.y), c.y);
+  float min_z = fminf(fminf(a.z, b.z), c.z);
+  float max_z = fmaxf(fmaxf(a.z, b.z), c.z);
 
-  box.upper = cuBQL::vec3f(fmaxf(fmaxf(a.x, b.x), c.x),
-                           fmaxf(fmaxf(a.y, b.y), c.y),
-                           fmaxf(fmaxf(a.z, b.z), c.z));
+  // Enforce minimal epsilon padding to prevent zero-volume collapse (e.g. Dy == 0.0)
+  const float EPS = 1e-5f;
+  if ((max_x - min_x) < EPS) {
+    float mid = 0.5f * (min_x + max_x);
+    min_x = mid - 0.5f * EPS;
+    max_x = mid + 0.5f * EPS;
+  }
+  if ((max_y - min_y) < EPS) {
+    float mid = 0.5f * (min_y + max_y);
+    min_y = mid - 0.5f * EPS;
+    max_y = mid + 0.5f * EPS;
+  }
+  if ((max_z - min_z) < EPS) {
+    float mid = 0.5f * (min_z + max_z);
+    min_z = mid - 0.5f * EPS;
+    max_z = mid + 0.5f * EPS;
+  }
+
+  cuBQL::box3f box;
+  box.lower = cuBQL::vec3f(min_x, min_y, min_z);
+  box.upper = cuBQL::vec3f(max_x, max_y, max_z);
 
   dBoxes[idx] = box;
 }
@@ -291,7 +311,24 @@ __global__ void assembleTrianglesKernel(
 __global__ void generateBoxes(cuBQL::box3f* boxes, const cuBQL::Triangle* tris, int N) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   if(i < N) {
-    boxes[i] = tris[i].bounds();
+    cuBQL::box3f box = tris[i].bounds();
+    const float EPS = 1e-5f;
+    if ((box.upper.x - box.lower.x) < EPS) {
+      float mid = 0.5f * (box.lower.x + box.upper.x);
+      box.lower.x = mid - 0.5f * EPS;
+      box.upper.x = mid + 0.5f * EPS;
+    }
+    if ((box.upper.y - box.lower.y) < EPS) {
+      float mid = 0.5f * (box.lower.y + box.upper.y);
+      box.lower.y = mid - 0.5f * EPS;
+      box.upper.y = mid + 0.5f * EPS;
+    }
+    if ((box.upper.z - box.lower.z) < EPS) {
+      float mid = 0.5f * (box.lower.z + box.upper.z);
+      box.lower.z = mid - 0.5f * EPS;
+      box.upper.z = mid + 0.5f * EPS;
+    }
+    boxes[i] = box;
   }
 }
 
@@ -494,11 +531,17 @@ __device__ inline vec3IntervalDouble transformIntervalPoint(
       ar20 * r.x + ar21 * r.y + ar22 * r.z
   );
 
-  // 5. Add a tiny safety margin to absorb GPU vs CPU FMA rounding differences
-  constexpr double GPU_SAFETY_EPS = 1.0e-14;
-  newR.x += GPU_SAFETY_EPS;
-  newR.y += GPU_SAFETY_EPS;
-  newR.z += GPU_SAFETY_EPS;
+  // 5. Scale-adaptive safety margin (Rigorous & Tight)
+  // Compute the local magnitude scale of the transformed coordinates
+  double scale = fmax(fabs(newCenter.x), fmax(fabs(newCenter.y), fmax(fabs(newCenter.z), 1.0)));
+  
+  // 64 operations / rounding steps bound: ~64 * machine epsilon (2.22e-16) * scale
+  // We add a tiny absolute floor (1.0e-15) so it never collapses to zero for degenerate points.
+  double adaptiveEps = fmax(1.0e-15, scale * 64.0 * 2.2204460492503131e-16);
+
+  newR.x += adaptiveEps;
+  newR.y += adaptiveEps;
+  newR.z += adaptiveEps;
 
   // Aggregate initialization for transformed interval box
   return vec3IntervalDouble{
@@ -573,6 +616,24 @@ __global__ void generateBoxesTrisIntervalKernel(
 
   double min_z = fmin(fmin(v0.z.lo, v1.z.lo), v2.z.lo);
   double max_z = fmax(fmax(v0.z.hi, v1.z.hi), v2.z.hi);
+
+  // Enforce minimal epsilon padding
+  const double EPS = 1e-5;
+  if ((max_x - min_x) < EPS) {
+    double mid = 0.5 * (min_x + max_x);
+    min_x = mid - 0.5 * EPS;
+    max_x = mid + 0.5 * EPS;
+  }
+  if ((max_y - min_y) < EPS) {
+    double mid = 0.5 * (min_y + max_y);
+    min_y = mid - 0.5 * EPS;
+    max_y = mid + 0.5 * EPS;
+  }
+  if ((max_z - min_z) < EPS) {
+    double mid = 0.5 * (min_z + max_z);
+    min_z = mid - 0.5 * EPS;
+    max_z = mid + 0.5 * EPS;
+  }
 
   cuBQL::box3f box;
   box.lower = cuBQL::vec3f(static_cast<float>(min_x), static_cast<float>(min_y), static_cast<float>(min_z));

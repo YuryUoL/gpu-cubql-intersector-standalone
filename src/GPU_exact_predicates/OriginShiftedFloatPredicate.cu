@@ -17,7 +17,8 @@ __device__ inline GPUInterval<float> make_provable_interval_from_interval(
     float f_hi = __double2float_ru(rel_hi);
 
     // 3. Combined relative error bound (FP64 subtraction + FP32 cast truncation)
-    constexpr float C_provable = 5.9604650e-8f; 
+    //constexpr float C_provable = 5.9604650e-8f; 
+    constexpr float C_provable = 1.1920929e-7f;
     float err_lo = fabsf(f_lo) * C_provable;
     float err_hi = fabsf(f_hi) * C_provable;
 
@@ -39,6 +40,7 @@ __device__ inline PairStatus classifyPair(
     const vec3IntervalDouble& Aa, const vec3IntervalDouble& Ab, const vec3IntervalDouble& Ac,
     const vec3IntervalDouble& Ba, const vec3IntervalDouble& Bb, const vec3IntervalDouble& Bc) 
 {    
+   // return PAIR_YELLOW;
     // 1. Pick Vertex Aa interval as Local Anchor Origin
     const vec3IntervalDouble anchor = Aa;
 

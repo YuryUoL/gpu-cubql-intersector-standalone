@@ -17,6 +17,8 @@
 #include <cmath>
 #include <random>
 
+#include "RobustOffLoader.h"
+
 TestSuite::TestSuite(ApplicationState &appState) : app_(appState) {}
 
 std::set<std::pair<int, int>> TestSuite::convertToCanonicalSet(const std::vector<int2> &pairs)
@@ -160,12 +162,12 @@ std::vector<int2> TestSuite::runMainGPUPipeline(
 
 void extractVertexCoordinatesParallelLocal(const Mesh &mesh, std::vector<double3> &outVerts)
 {
-  size_t numVerts = num_vertices(mesh);
-  outVerts.resize(numVerts);
-  auto coords = mesh.points();
+    size_t numVerts = num_vertices(mesh);
+    outVerts.resize(numVerts);
+    auto coords = mesh.points();
 
-  tbb::parallel_for(tbb::blocked_range<size_t>(0, numVerts), [&](const tbb::blocked_range<size_t> &r)
-                    {
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, numVerts), [&](const tbb::blocked_range<size_t> &r)
+                      {
     for(size_t i = r.begin(); i != r.end(); ++i) {
       typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
       const auto& p = coords[v];
@@ -189,26 +191,34 @@ std::vector<int2> TestSuite::runStandalonePipeline(
 
     // Extract vertex coordinates from the pre-transformed meshes
     std::vector<double3> hVertsA_transformed, hVertsB_transformed;
-    extractVertexCoordinatesParallelLocal(meshA_transformed, hVertsA_transformed);
-    extractVertexCoordinatesParallelLocal(meshB_transformed, hVertsB_transformed);
+    std::vector<uint3> hIndicesA_transformed, hIndicesB_transformed;
+
+    if (!RobustIO::deriveBuffersFromMesh(meshA_transformed, hVertsA_transformed, hIndicesA_transformed) ||
+        !RobustIO::deriveBuffersFromMesh(meshB_transformed, hVertsB_transformed, hIndicesB_transformed))
+    {
+        std::cout << "Error: transformed mesh has removed elements (garbage); cannot build dense GPU buffers.\n";
+       // return;
+    }
+
+   
 
     ExecutionStats testStats;
     int2 *outPairs = nullptr;
     size_t outCount = 0;
 
     auto tStart = std::chrono::high_resolution_clock::now();
-    
+
     runGridForestIntersectionPipeline(
-        meshA_transformed, meshB_transformed, 
-        hVertsA_transformed.data(), static_cast<int>(hVertsA_transformed.size()),
-        app_.hIndicesA.data(), static_cast<int>(app_.hIndicesA.size()), config.queryDescentLevel,
-        hVertsB_transformed.data(), static_cast<int>(hVertsB_transformed.size()), app_.hIndicesB.data(),
-        static_cast<int>(app_.hIndicesB.size()), config.referenceDescentLevel, config.batchMultiplier,
-        config.dualTreeSteps, config.enableGpuPrecision, config.leafThreshold, testStats,
+      meshA_transformed, meshB_transformed,
+      hVertsA_transformed.data(), static_cast<int>(hVertsA_transformed.size()),
+      hIndicesA_transformed.data(), static_cast<int>(hIndicesA_transformed.size()), config.queryDescentLevel,
+      hVertsB_transformed.data(), static_cast<int>(hVertsB_transformed.size()),
+      hIndicesB_transformed.data(), static_cast<int>(hIndicesB_transformed.size()), config.referenceDescentLevel,
+      config.batchMultiplier, config.dualTreeSteps, config.enableGpuPrecision, config.leafThreshold, testStats,
         outPairs, outCount, centerA, centerB, 
         make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0), 
-        make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0));
-        
+        make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)); // RotB, TransB as 0s
+
     auto tEnd = std::chrono::high_resolution_clock::now();
     outTimeMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
     outCandidates = testStats.finalAabbCandidatePairs;
@@ -475,9 +485,9 @@ void TestSuite::runSuite(const TestConfig &config)
     allResults.reserve(config.numSteps);
 
     std::mt19937 rng(config.seed);
-    const double maxRotRad = config.maxRotationDeg * (M_PI / 180.0);
 
-    std::uniform_real_distribution<double> rotDist(-maxRotRad, maxRotRad);
+    // FIX: Use maxRotationDeg directly since baseRot and input configs are in DEGREES
+    std::uniform_real_distribution<double> rotDist(-config.maxRotationDeg, config.maxRotationDeg);
     std::uniform_real_distribution<double> transDist(-config.maxTranslation, config.maxTranslation);
 
     for (int i = 0; i < config.numSteps; ++i)
@@ -497,17 +507,81 @@ void TestSuite::runSuite(const TestConfig &config)
         VerificationResult res = evaluateStep(i, rotA, transA, rotB, transB, config);
         allResults.push_back(res);
 
-        std::cout << "test " << i << ": "
-                  << "Tris=" << std::setw(4) << res.groundTruthCount << " | "
-                  << "Omega=" << std::fixed << std::setprecision(2) << (res.surfaceOverlapRatio * 100.0) << "% | "
-                  << "N_cand=" << std::setw(6) << res.candidatePairs << " | "
-                  << "Yield=" << std::scientific << std::setprecision(2) << res.candidateYield << " | "
-                  << std::fixed << std::setprecision(2)
-                  << "Hybrid=" << res.gpuMainTimeMs << "ms | "
-                  << "Standalone=" << res.standaloneTimeMs << "ms | "
-                  << "CGAL_Classic=" << res.cgalClassicTimeMs << "ms | "
-                  << "CGAL_Parallel=" << res.cgalParallelTimeMs << "ms\n";
+        // Check if all active methods coincided on the exact intersection count
+        bool countsCoincided = true;
+        size_t baselineCount = res.groundTruthCount;
+        if (config.testCgalParallel && res.cgalParallelCount != baselineCount)
+            countsCoincided = false;
+        if (config.testMainGpuPipeline && res.gpuMainCount != baselineCount)
+            countsCoincided = false;
+        if (config.testStandalonePipeline && res.standaloneCount != baselineCount)
+            countsCoincided = false;
+
+        // Print step header and full-precision transformation details (already in degrees)
+        std::cout << "test " << std::setw(3) << i << ":\n";
+
+        // Save current stream flags
+        std::ios state(nullptr);
+        state.copyfmt(std::cout);
+
+        std::cout << std::defaultfloat << std::setprecision(16);
+        std::cout << "  [Transform A] Rot(°)=(" << rotA.x << ", " << rotA.y << ", " << rotA.z << ") | "
+                  << "Trans=(" << transA.x << ", " << transA.y << ", " << transA.z << ")\n";
+        std::cout << "  [Transform B] Rot(°)=(" << rotB.x << ", " << rotB.y << ", " << rotB.z << ") | "
+                  << "Trans=(" << transB.x << ", " << transB.y << ", " << transB.z << ")\n";
+
+        // Restore stream formatting for results & metrics
+        std::cout.copyfmt(state);
+
+        // Print intersection counts and performance stats
+        std::cout << "  [Results]     CGAL_Classic=" << std::setw(4) << res.groundTruthCount;
+
+        if (config.testCgalParallel)
+            std::cout << " | CGAL_Parallel=" << std::setw(4) << res.cgalParallelCount;
+        if (config.testMainGpuPipeline)
+            std::cout << " | Hybrid=" << std::setw(4) << res.gpuMainCount;
+        if (config.testStandalonePipeline)
+            std::cout << " | Standalone=" << std::setw(4) << res.standaloneCount;
+
+        std::cout << " | " << (countsCoincided ? "[ALL COINCIDED]" : "[DISTINCTIONS FOUND]") << "\n"
+                  << "  [Metrics]     Omega=" << std::fixed << std::setprecision(2) << (res.surfaceOverlapRatio * 100.0) << "% | "
+                  << "Hybrid_t=" << res.gpuMainTimeMs << "ms | "
+                  << "Standalone_t=" << res.standaloneTimeMs << "ms\n\n";
     }
+
+    // Compute overall suite consensus summary
+    int totalSteps = static_cast<int>(allResults.size());
+    int fullyCoincidedSteps = 0;
+    for (const auto &res : allResults)
+    {
+        bool coincided = true;
+        size_t gt = res.groundTruthCount;
+        if (config.testCgalParallel && res.cgalParallelCount != gt)
+            coincided = false;
+        if (config.testMainGpuPipeline && res.gpuMainCount != gt)
+            coincided = false;
+        if (config.testStandalonePipeline && res.standaloneCount != gt)
+            coincided = false;
+        if (coincided)
+            fullyCoincidedSteps++;
+    }
+
+    std::cout << "----------------------------------------------------------------------------------------\n";
+    std::cout << "                         INTERSECTION CONSENSUS SUMMARY                                 \n";
+    std::cout << "----------------------------------------------------------------------------------------\n";
+    std::cout << "  Total Steps Run          : " << totalSteps << "\n";
+    std::cout << "  Steps with Full Consensus: " << fullyCoincidedSteps << " / " << totalSteps
+              << " (" << std::fixed << std::setprecision(1) << (100.0 * fullyCoincidedSteps / totalSteps) << "%)\n";
+    if (fullyCoincidedSteps == totalSteps)
+    {
+        std::cout << "  Status                   : ALL methods coincided on intersection counts across every step.\n";
+    }
+    else
+    {
+        std::cout << "  Status                   : DISTINCTIONS found in intersection counts across methods in "
+                  << (totalSteps - fullyCoincidedSteps) << " step(s).\n";
+    }
+    std::cout << "----------------------------------------------------------------------------------------\n\n";
 
     // Export all 3 CSV files
     std::string summaryCsv = config.csvOutputPath;

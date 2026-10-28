@@ -48,11 +48,16 @@
 #include "CPU/ApplicationState.h"
 #include "CPU/CgalParallelLauncher.h"
 
+#include "CPU/IntersectionHistory.h"
+#include "CPU/DebugFallbackCollector.h"
+
 // Hardware Warmup & Pipeline Entry Points
 #include "Warmup/cuda_warmup.h"
 #include "GPUIntersector/StandaloneBVHPipeline.h"
+#include "CPU/RobustOffLoader.h"
 
 static TestConfig g_testConfig;
+static IntersectionHistory g_history;
 
 /**
  * @brief Accumulator for computing mesh face and edge geometry metrics across parallel TBB threads.
@@ -173,6 +178,71 @@ double ny = (CGAL::to_double(p.y()) - cy) * scaleFactor;
 double nz = (CGAL::to_double(p.z()) - cz) * scaleFactor;
       coords[v] = Point3(nx, ny, nz);
     } });
+}
+
+/**
+ * @brief Helper to capture full-precision face vertex positions from transformed CGAL meshes.
+ */
+/**
+ * @brief Helper to capture full-precision face vertex positions and vertex indices from transformed CGAL meshes.
+ */
+std::vector<IntersectingTriangleRecord> extractTriangleRecords(
+    const Mesh &meshA_transformed,
+    const Mesh &meshB_transformed,
+    const std::vector<int2> &intersectedPairs)
+{
+  std::vector<IntersectingTriangleRecord> records;
+  records.reserve(intersectedPairs.size());
+
+  auto pointsA = meshA_transformed.points();
+  auto pointsB = meshB_transformed.points();
+
+  for (const auto &pair : intersectedPairs)
+  {
+    IntersectingTriangleRecord rec;
+    rec.faceA = pair.x;
+    rec.faceB = pair.y;
+
+    // Extract Mesh A triangle vertices and indices
+    auto fA = Mesh::Face_index(pair.x);
+    auto hA = meshA_transformed.halfedge(fA);
+    auto vA0 = meshA_transformed.source(hA);
+    auto vA1 = meshA_transformed.target(hA);
+    auto vA2 = meshA_transformed.target(meshA_transformed.next(hA));
+
+    rec.vA0_idx = static_cast<int>(vA0.idx());
+    rec.vA1_idx = static_cast<int>(vA1.idx());
+    rec.vA2_idx = static_cast<int>(vA2.idx());
+
+    auto pA0 = pointsA[vA0];
+    auto pA1 = pointsA[vA1];
+    auto pA2 = pointsA[vA2];
+    rec.a_v0 = make_double3(CGAL::to_double(pA0.x()), CGAL::to_double(pA0.y()), CGAL::to_double(pA0.z()));
+    rec.a_v1 = make_double3(CGAL::to_double(pA1.x()), CGAL::to_double(pA1.y()), CGAL::to_double(pA1.z()));
+    rec.a_v2 = make_double3(CGAL::to_double(pA2.x()), CGAL::to_double(pA2.y()), CGAL::to_double(pA2.z()));
+
+    // Extract Mesh B triangle vertices and indices
+    auto fB = Mesh::Face_index(pair.y);
+    auto hB = meshB_transformed.halfedge(fB);
+    auto vB0 = meshB_transformed.source(hB);
+    auto vB1 = meshB_transformed.target(hB);
+    auto vB2 = meshB_transformed.target(meshB_transformed.next(hB));
+
+    rec.vB0_idx = static_cast<int>(vB0.idx());
+    rec.vB1_idx = static_cast<int>(vB1.idx());
+    rec.vB2_idx = static_cast<int>(vB2.idx());
+
+    auto pB0 = pointsB[vB0];
+    auto pB1 = pointsB[vB1];
+    auto pB2 = pointsB[vB2];
+    rec.b_v0 = make_double3(CGAL::to_double(pB0.x()), CGAL::to_double(pB0.y()), CGAL::to_double(pB0.z()));
+    rec.b_v1 = make_double3(CGAL::to_double(pB1.x()), CGAL::to_double(pB1.y()), CGAL::to_double(pB1.z()));
+    rec.b_v2 = make_double3(CGAL::to_double(pB2.x()), CGAL::to_double(pB2.y()), CGAL::to_double(pB2.z()));
+
+    records.push_back(rec);
+  }
+
+  return records;
 }
 
 /**
@@ -379,6 +449,10 @@ void cmdComputeCGALParallel(ApplicationState &app, std::istringstream &iss)
 
   PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
 
+
+  auto records = extractTriangleRecords(meshA_transformed, meshB_transformed, stdPairs);
+  g_history.recordRun("cgalparallel", elapsedMs, records);
+
   std::cout << "=======================================================\n";
   std::cout << "       EXPERIMENTAL CGAL PARALLEL INTERSECTION         \n";
   std::cout << "=======================================================\n";
@@ -421,35 +495,45 @@ void extractVertexCoordinatesParallel(const Mesh &mesh, std::vector<double3> &ou
 /**
  * @brief Standard single-threaded stream parser for OFF mesh files using CGAL ifstream operator.
  */
-bool loadMeshOffSequential(const std::string &filepath,
-                           Mesh &mesh,
-                           std::vector<double3> &outVerts,
-                           std::vector<uint3> &outIndices)
+// bool loadMeshOffSequential(const std::string &filepath,
+//                            Mesh &mesh,
+//                            std::vector<double3> &outVerts,
+//                            std::vector<uint3> &outIndices)
+// {
+//   std::ifstream inFile(filepath);
+//   if (!inFile.is_open() || !(inFile >> mesh))
+//     return false;
+
+//   size_t numVerts = num_vertices(mesh);
+//   outVerts.resize(numVerts);
+//   auto coords = mesh.points();
+//   for (size_t i = 0; i < numVerts; ++i)
+//   {
+//     typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
+//     const auto &p = coords[v];
+//     outVerts[i] = make_double3(CGAL::to_double(p.x()), CGAL::to_double(p.y()), CGAL::to_double(p.z()));
+//   }
+
+//   size_t numFaces = num_faces(mesh);
+//   outIndices.resize(numFaces);
+//   size_t fIdx = 0;
+//   for (auto f : mesh.faces())
+//   {
+//     auto h = mesh.halfedge(f);
+//     outIndices[fIdx++] = {static_cast<uint32_t>(mesh.source(h)), static_cast<uint32_t>(mesh.target(h)),
+//                           static_cast<uint32_t>(mesh.target(mesh.next(h)))};
+//   }
+//   return true;
+// }
+
+bool loadMeshOffSequential(const std::string &filepath, Mesh &mesh,
+                           std::vector<double3> &outVerts, std::vector<uint3> &outIndices)
 {
-  std::ifstream inFile(filepath);
-  if (!inFile.is_open() || !(inFile >> mesh))
+  RobustIO::OffLoadReport rep;
+  if (!RobustIO::loadOffRobust<Mesh, Point3>(filepath, mesh, outVerts, outIndices, rep))
     return false;
-
-  size_t numVerts = num_vertices(mesh);
-  outVerts.resize(numVerts);
-  auto coords = mesh.points();
-  for (size_t i = 0; i < numVerts; ++i)
-  {
-    typename Mesh::Vertex_index v(static_cast<Mesh::size_type>(i));
-    const auto &p = coords[v];
-    outVerts[i] = make_double3(CGAL::to_double(p.x()), CGAL::to_double(p.y()), CGAL::to_double(p.z()));
-  }
-
-  size_t numFaces = num_faces(mesh);
-  outIndices.resize(numFaces);
-  size_t fIdx = 0;
-  for (auto f : mesh.faces())
-  {
-    auto h = mesh.halfedge(f);
-    outIndices[fIdx++] = {static_cast<uint32_t>(mesh.source(h)), static_cast<uint32_t>(mesh.target(h)),
-                          static_cast<uint32_t>(mesh.target(mesh.next(h)))};
-  }
-  return true;
+  rep.print(filepath);
+  return rep.meshFaces > 0;
 }
 
 std::string parseArgument(std::istringstream &iss)
@@ -661,6 +745,9 @@ void executeMeshIntersectionPipeline(ApplicationState &app,
   {
     PolyscopeBridge::highlightIntersections({}, num_faces(app.meshA), num_faces(app.meshB));
   }
+   // auto records = extractTriangleRecords(meshA_transformed, meshB_transformed, stdPairs);
+  //  g_history.recordRun("hybrid", elapsedMs, records);
+
 
   // Handle curve generation via PolyscopeBridge abstraction
   double curveMs = 0.0;
@@ -1114,6 +1201,9 @@ void cmdComputeCGALClassic(ApplicationState &app, std::istringstream &iss)
 
   PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
 
+  auto records = extractTriangleRecords(meshA_transformed, meshB_transformed, stdPairs);
+  g_history.recordRun("cgalclassic", elapsedMs, records);
+
   std::cout << "=======================================================\n";
   std::cout << "         CLASSICAL CGAL CPU INTERSECTION               \n";
   std::cout << "=======================================================\n";
@@ -1138,13 +1228,9 @@ void cmdTestBVH(ApplicationState &app, std::istringstream &iss)
   if (iss >> batchStr)
   {
     if (batchStr == "INF" || batchStr == "inf")
-    {
       batchMultiplier = std::numeric_limits<int>::max();
-    }
     else
-    {
       batchMultiplier = std::stoi(batchStr);
-    }
     iss >> mode >> leafThreshold >> predicateDoubleMode;
   }
 
@@ -1165,27 +1251,43 @@ void cmdTestBVH(ApplicationState &app, std::istringstream &iss)
   transformCgalMesh(app.meshB, meshB_transformed, centerB, make_double3(rotB.x, rotB.y, rotB.z),
                     make_double3(transB.x, transB.y, transB.z));
 
-  // 2. Extract vertex coordinates from the pre-transformed meshes
+  // 2. Derive BOTH vertex and index buffers from the transformed meshes, so that
+  //    GPU face i == CGAL face i and GPU vertex i == CGAL vertex i by construction.
+  //    (Do NOT use app.hIndicesA/B here: they come from load time and may be misaligned.)
   std::vector<double3> hVertsA_transformed, hVertsB_transformed;
-  extractVertexCoordinatesParallel(meshA_transformed, hVertsA_transformed);
-  extractVertexCoordinatesParallel(meshB_transformed, hVertsB_transformed);
+  std::vector<uint3> hIndicesA_transformed, hIndicesB_transformed;
+
+  if (!RobustIO::deriveBuffersFromMesh(meshA_transformed, hVertsA_transformed, hIndicesA_transformed) ||
+      !RobustIO::deriveBuffersFromMesh(meshB_transformed, hVertsB_transformed, hIndicesB_transformed))
+  {
+    std::cout << "Error: transformed mesh has removed elements (garbage); cannot build dense GPU buffers.\n";
+    return;
+  }
+
+  // Report whether the load-time indices were misaligned (diagnostic only)
+  if (app.hIndicesA.size() != hIndicesA_transformed.size() || app.hIndicesB.size() != hIndicesB_transformed.size())
+  {
+    std::cout << "[Warning] Load-time hIndices disagree with CGAL face counts: A " << app.hIndicesA.size() << " vs "
+              << hIndicesA_transformed.size() << ", B " << app.hIndicesB.size() << " vs "
+              << hIndicesB_transformed.size() << ". Using indices derived from the CGAL meshes.\n";
+  }
 
   ExecutionStats testStats;
   int2 *outIntersectionPairs = nullptr;
   size_t outFinalCount = 0;
 
   auto tStart = std::chrono::high_resolution_clock::now();
-  
-  // 3. Run pipeline passing the transformed meshes/buffers with 0 rotation and 0 translation
+
+  // 3. Run pipeline on the transformed meshes/buffers with 0 rotation and 0 translation
   runGridForestIntersectionPipeline(
-      meshA_transformed, meshB_transformed, 
-      hVertsA_transformed.data(), static_cast<int>(hVertsA_transformed.size()), app.hIndicesA.data(),
-      static_cast<int>(app.hIndicesA.size()), queryDescentLevel, 
-      hVertsB_transformed.data(), static_cast<int>(hVertsB_transformed.size()), app.hIndicesB.data(),
-      static_cast<int>(app.hIndicesB.size()),
-      referenceDescentLevel, batchMultiplier, mode, predicateDoubleMode, leafThreshold, testStats, outIntersectionPairs,
-      outFinalCount, centerA, centerB, 
-      make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0), // RotA, TransA as 0s
+      meshA_transformed, meshB_transformed,
+      hVertsA_transformed.data(), static_cast<int>(hVertsA_transformed.size()),
+      hIndicesA_transformed.data(), static_cast<int>(hIndicesA_transformed.size()), queryDescentLevel,
+      hVertsB_transformed.data(), static_cast<int>(hVertsB_transformed.size()),
+      hIndicesB_transformed.data(), static_cast<int>(hIndicesB_transformed.size()), referenceDescentLevel,
+      batchMultiplier, mode, predicateDoubleMode, leafThreshold, testStats, outIntersectionPairs, outFinalCount,
+      centerA, centerB,
+      make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0),  // RotA, TransA as 0s
       make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)); // RotB, TransB as 0s
 
   auto tEnd = std::chrono::high_resolution_clock::now();
@@ -1195,11 +1297,26 @@ void cmdTestBVH(ApplicationState &app, std::istringstream &iss)
   {
     std::vector<int2> stdPairs(outIntersectionPairs, outIntersectionPairs + outFinalCount);
     PolyscopeBridge::highlightIntersections(stdPairs, num_faces(app.meshA), num_faces(app.meshB));
+    auto records = extractTriangleRecords(meshA_transformed, meshB_transformed, stdPairs);
+    g_history.recordRun("standaloneBVH", elapsedMs, records);
     std::free(outIntersectionPairs);
   }
   else
   {
+    std::vector<int2> emptyPairs;
+    auto records = extractTriangleRecords(meshA_transformed, meshB_transformed, emptyPairs);
+    g_history.recordRun("standaloneBVH", elapsedMs, records);
     PolyscopeBridge::highlightIntersections({}, num_faces(app.meshA), num_faces(app.meshB));
+  }
+
+  std::vector<int2> fallbackPairs = DebugFallbackCollector::getCaptured();
+  std::cout << "[Debug] Total pairs sent to CPU fallback: " << fallbackPairs.size() << "\n";
+
+  if (!fallbackPairs.empty())
+  {
+    auto fallbackRecords = extractTriangleRecords(meshA_transformed, meshB_transformed, fallbackPairs);
+    g_history.recordRun("cpu_fallback_candidates", elapsedMs, fallbackRecords);
+    std::cout << "[Debug] Recorded CPU fallback candidates to history! Use 'history' and 'exportRun' to inspect.\n";
   }
 
   // Trigger dedicated testBVH visualizer window
@@ -1231,7 +1348,6 @@ void cmdTestBVH(ApplicationState &app, std::istringstream &iss)
   std::cout << "  -----------------------------------------------------\n";
   std::cout << "  Exact Intersections    : " << outFinalCount << "\n";
   std::cout << "  AABB Candidate Pairs   : " << testStats.finalAabbCandidatePairs << "\n";
-  // Added breakdown for Green, Yellow, and Orange list counts:
   std::cout << "  Green List (Confirmed) : " << testStats.loopTracker.confirmedGreenPairs << "\n";
   std::cout << "  Yellow List (Confirmed): " << testStats.loopTracker.confirmedYellowPairs << "\n";
   std::cout << "  Orange List (Confirmed): " << testStats.loopTracker.confirmedOrangePairs << "\n";
@@ -1503,6 +1619,53 @@ int main(int argc, char **argv)
   ui.registerCommand("getBounds", "", "Prints full bounding box extents and dimensions (Dx, Dy, Dz) of both meshes.",
                      [&](std::istringstream &iss)
                      { cmdGetBoundingBoxes(app, iss); });
+
+  ui.registerCommand("history", "", "Displays quick overview of last 5 execution runs.",
+                     [&](std::istringstream &)
+                     {
+                       g_history.printOverview();
+                     });
+
+  ui.registerCommand("exportRun", "<entry_id> [output.csv]",
+                     "Exports all intersections of a specific history entry to CSV with full vertex indices and double precision.",
+                     [&](std::istringstream &iss)
+                     {
+                       size_t entryId;
+                       std::string csvPath = "run_output.csv";
+                       if (iss >> entryId)
+                       {
+                         std::string userPath;
+                         if (iss >> userPath)
+                           csvPath = userPath;
+                         g_history.exportRunToCsv(entryId, csvPath);
+                       }
+                       else
+                       {
+                         std::cout << "Usage: exportRun <entry_id> [output.csv]\n";
+                       }
+                     });
+  ui.registerAlias("exportEntry", "exportRun");
+  // 2. Diff export command
+  // ui.registerCommand("exportDiff", "<entry1_id> <entry2_id> [output.csv]",
+  //                    "Exports differences between entry1 and entry2 to CSV file.",
+  //                    [&](std::istringstream &iss)
+  //                    {
+  //                      size_t id1, id2;
+  //                      std::string csvPath = "diff_output.csv";
+  //                      if (iss >> id1 >> id2)
+  //                      {
+  //                        std::string userPath;
+  //                        if (iss >> userPath)
+  //                          csvPath = userPath;
+  //                        g_history.exportDiff(id1, id2, csvPath);
+  //                      }
+  //                      else
+  //                      {
+  //                        std::cout << "Usage: exportDiff <entry1_id> <entry2_id> [output.csv]\n";
+  //                      }
+  //                    });
+
+  // ui.registerAlias("diff", "exportDiff");
 
   ui.registerAlias("getbounds", "getBounds");
   ui.registerAlias("bbox", "getBounds");

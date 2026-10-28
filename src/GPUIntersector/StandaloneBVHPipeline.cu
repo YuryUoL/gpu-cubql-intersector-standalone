@@ -108,16 +108,18 @@ extern "C" void runGridForestIntersectionPipeline(Mesh& meshA,
   CUBQL_CUDA_CALL(MemcpyAsync(d_vertsB, h_vertsB, numVertsB * sizeof(double3), cudaMemcpyHostToDevice, stream));
   CUBQL_CUDA_CALL(MemcpyAsync(d_indicesB, h_indicesB, numTrianglesB * sizeof(uint3), cudaMemcpyHostToDevice, stream));
 
-  // ============================================================================
-  // 2. WORLD-SPACE VERTEX TRANSFORMATIONS & AABB GENERATION
-  // ============================================================================
-  const Mat3x3 rotMatrixA = makeRotationMatrixDeg(rotA.x, rotA.y, rotA.z);
-  const double3 centerPosA = make_double3(CGAL::to_double(centerA.x()), CGAL::to_double(centerA.y()), CGAL::to_double(centerA.z()));
-  launchTransformVertices(d_vertsA, d_vertsA, numVertsA, rotMatrixA, centerPosA, transA, stream);
+  // // ============================================================================
+  // // 2. WORLD-SPACE VERTEX TRANSFORMATIONS & AABB GENERATION
+  // // ============================================================================
+  // const Mat3x3 rotMatrixA = makeRotationMatrixDeg(rotA.x, rotA.y, rotA.z);
+  // const double3 centerPosA = make_double3(CGAL::to_double(centerA.x()), CGAL::to_double(centerA.y()), CGAL::to_double(centerA.z()));
+  // //launchTransformVertices(d_vertsA, d_vertsA, numVertsA, rotMatrixA, centerPosA, transA, stream);
 
-  const Mat3x3 rotMatrixB = makeRotationMatrixDeg(rotB.x, rotB.y, rotB.z);
-  const double3 centerPosB = make_double3(CGAL::to_double(centerB.x()), CGAL::to_double(centerB.y()), CGAL::to_double(centerB.z()));
-  launchTransformVertices(d_vertsB, d_vertsB, numVertsB, rotMatrixB, centerPosB, transB, stream);
+  // launchTransformVerticesPlain
+
+  // const Mat3x3 rotMatrixB = makeRotationMatrixDeg(rotB.x, rotB.y, rotB.z);
+  // const double3 centerPosB = make_double3(CGAL::to_double(centerB.x()), CGAL::to_double(centerB.y()), CGAL::to_double(centerB.z()));
+  // launchTransformVertices(d_vertsB, d_vertsB, numVertsB, rotMatrixB, centerPosB, transB, stream);
 
   cuBQL::box3f* d_boxesA = nullptr;
   cuBQL::box3f* d_boxesB = nullptr;
@@ -130,6 +132,42 @@ extern "C" void runGridForestIntersectionPipeline(Mesh& meshA,
                                                                                      numTrianglesB);
 
   CUBQL_CUDA_CALL(StreamSynchronize(stream));
+
+  // // ============================================================================
+  // // DEBUG HOOK: DOWNLOAD GPU CUBLQ BOXES TO HOST AND EXPORT TO CSV
+  // // ============================================================================
+  // {
+  //   std::vector<cuBQL::box3f> h_boxesA_debug(numTrianglesA);
+  //   std::vector<cuBQL::box3f> h_boxesB_debug(numTrianglesB);
+
+  //   CUBQL_CUDA_CALL(MemcpyAsync(h_boxesA_debug.data(), d_boxesA, numTrianglesA * sizeof(cuBQL::box3f), cudaMemcpyDeviceToHost, stream));
+  //   CUBQL_CUDA_CALL(MemcpyAsync(h_boxesB_debug.data(), d_boxesB, numTrianglesB * sizeof(cuBQL::box3f), cudaMemcpyDeviceToHost, stream));
+  //   CUBQL_CUDA_CALL(StreamSynchronize(stream));
+
+  //   auto dumpBoxesToCsv = [](const std::string& filename, const std::vector<cuBQL::box3f>& boxes) {
+  //     std::ofstream file(filename);
+  //     if (!file.is_open()) return;
+  //     file << "FaceID,MinX,MinY,MinZ,MaxX,MaxY,MaxZ,Dx,Dy,Dz\n";
+  //     file << std::setprecision(17);
+  //     for (size_t i = 0; i < boxes.size(); ++i) {
+  //       // Note: adjust .lower/.upper to .min/.max if your cuBQL version uses min/max
+  //       float dx = boxes[i].upper.x - boxes[i].lower.x;
+  //       float dy = boxes[i].upper.y - boxes[i].lower.y;
+  //       float dz = boxes[i].upper.z - boxes[i].lower.z;
+  //       file << i << "," 
+  //            << boxes[i].lower.x << "," << boxes[i].lower.y << "," << boxes[i].lower.z << ","
+  //            << boxes[i].upper.x << "," << boxes[i].upper.y << "," << boxes[i].upper.z << ","
+  //            << dx << "," << dy << "," << dz << "\n";
+  //     }
+  //     file.close();
+  //   };
+
+  //   dumpBoxesToCsv("/home/yury/Projects/PythonMesh/Debug/October27Debug/gpu_cubql_boxes_A.csv", h_boxesA_debug);
+  //   dumpBoxesToCsv("/home/yury/Projects/PythonMesh/Debug/October27Debug/gpu_cubql_boxes_B.csv", h_boxesB_debug);
+  //   std::cout << "[Debug] Downloaded " << numTrianglesA << " Mesh A and " << numTrianglesB 
+  //             << " Mesh B GPU cuBQL boxes to '/home/yury/Projects/PythonMesh/Debug/October27Debug/gpu_cubql_boxes_A.csv' & 'gpu_cubql_boxes_B.csv'!\n";
+  // }
+
   stats.initialAllocAndCopyMs = (cuBQL::getCurrentTime() - tAllocStart) * 1000.0;
 
   // ============================================================================
@@ -249,6 +287,30 @@ extern "C" void runGridForestIntersectionPipeline(Mesh& meshA,
   CUBQL_CUDA_CALL(StreamSynchronize(stream));
   stats.buildRefitMeshBMs += (cuBQL::getCurrentTime() - tForestBStart) * 1000.0;
 
+
+  // // DEBUG HOOK: Export BVH A Node Bounding Boxes after Refit
+  // {
+  //   std::string debugDir = "/home/yury/Projects/PythonMesh/Debug/October27Debug/";
+  //   std::vector<typename cuBQL::BinaryBVH<float, 3>::Node> h_bvhNodes(bvhA.numNodes);
+  //   CUBQL_CUDA_CALL(MemcpyAsync(h_bvhNodes.data(), bvhA.nodes, bvhA.numNodes * sizeof(typename cuBQL::BinaryBVH<float, 3>::Node), cudaMemcpyDeviceToHost, stream));
+  //   CUBQL_CUDA_CALL(StreamSynchronize(stream));
+
+  //   std::ofstream boxFile(debugDir + "debug_bvhA_node_boxes.csv");
+  //   boxFile << "NodeID,MinX,MinY,MinZ,MaxX,MaxY,MaxZ,IsLeaf,Offset,Count\n";
+  //   boxFile << std::setprecision(17);
+  //   for (size_t n = 0; n < h_bvhNodes.size(); ++n) {
+  //     bool isLeaf = (h_bvhNodes[n].admin.count > 0) || (h_bvhNodes[n].admin.offset == (uint32_t)-1);
+  //     boxFile << n << ","
+  //             << h_bvhNodes[n].bounds.lower.x << "," << h_bvhNodes[n].bounds.lower.y << "," << h_bvhNodes[n].bounds.lower.z << ","
+  //             << h_bvhNodes[n].bounds.upper.x << "," << h_bvhNodes[n].bounds.upper.y << "," << h_bvhNodes[n].bounds.upper.z << ","
+  //             << (isLeaf ? 1 : 0) << ","
+  //             << h_bvhNodes[n].admin.offset << ","
+  //             << h_bvhNodes[n].admin.count << "\n";
+  //   }
+  //   boxFile.close();
+  //   std::cout << "[Debug Hook] Exported " << h_bvhNodes.size() << " BVH A node boxes to debug_bvhA_node_boxes.csv\n";
+  // }
+
   // ============================================================================
   // 7. DUAL-TREE REFINEMENT & RAPID DESCENT BFS
   // ============================================================================
@@ -288,6 +350,83 @@ extern "C" void runGridForestIntersectionPipeline(Mesh& meshA,
   }
   CUBQL_CUDA_CALL(StreamSynchronize(stream));
   const double tGpuBfsEnd = cuBQL::getCurrentTime();
+
+  // // DEBUG HOOK: EXPORT PRE-TRAVERSAL CONFIGURATION & BATCHES FOR PYTHON
+  // // ============================================================================
+  // {
+  //   namespace fs = std::filesystem;
+  //   std::string debugDir = "/home/yury/Projects/PythonMesh/Debug/October27Debug/";
+    
+  //   // 1. Download Batch Pairs (d_outPairsA, d_outPairsB)
+  //   std::vector<uint32_t> h_outPairsA(d_outPairsA.size());
+  //   std::vector<uint32_t> h_outPairsB(d_outPairsB.size());
+  //   if (!d_outPairsA.empty()) {
+  //     CUBQL_CUDA_CALL(MemcpyAsync(h_outPairsA.data(), thrust::raw_pointer_cast(d_outPairsA.data()), 
+  //                                 d_outPairsA.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream));
+  //     CUBQL_CUDA_CALL(MemcpyAsync(h_outPairsB.data(), thrust::raw_pointer_cast(d_outPairsB.data()), 
+  //                                 d_outPairsB.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream));
+  //     CUBQL_CUDA_CALL(StreamSynchronize(stream));
+  //   }
+
+  //   std::ofstream batchFile(debugDir + "debug_pipeline_batches.csv");
+  //   batchFile << "BatchID,NodeA,NodeB\n";
+  //   for (size_t b = 0; b < h_outPairsA.size(); ++b) {
+  //     batchFile << b << "," << h_outPairsA[b] << "," << h_outPairsB[b] << "\n";
+  //   }
+  //   batchFile.close();
+
+  //   // 2. Download BVH A Nodes (bvhA.nodes, bvhA.numNodes, bvhA.primIDs)
+  //   std::vector<typename cuBQL::BinaryBVH<float, 3>::Node> h_bvhANodes(bvhA.numNodes);
+  //   CUBQL_CUDA_CALL(MemcpyAsync(h_bvhANodes.data(), bvhA.nodes, bvhA.numNodes * sizeof(typename cuBQL::BinaryBVH<float, 3>::Node), cudaMemcpyDeviceToHost, stream));
+    
+  //   std::vector<uint32_t> h_bvhAPrimIDs(numTrianglesA);
+  //   CUBQL_CUDA_CALL(MemcpyAsync(h_bvhAPrimIDs.data(), bvhA.primIDs, numTrianglesA * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream));
+  //   CUBQL_CUDA_CALL(StreamSynchronize(stream));
+
+  //   std::ofstream nodeFile(debugDir + "debug_bvhA_nodes.csv");
+  //   nodeFile << "NodeID,Offset,Count\n";
+  //   for (size_t n = 0; n < h_bvhANodes.size(); ++n) {
+  //     // Accessing the standard cuBQL Node union fields (.admin.offset, .admin.count)
+  //     nodeFile << n << "," 
+  //              << h_bvhANodes[n].admin.offset << "," 
+  //              << h_bvhANodes[n].admin.count << "\n";
+  //   }
+  //   nodeFile.close();
+
+  //   std::ofstream primFile(debugDir + "debug_bvhA_primids.csv");
+  //   primFile << "BVHIndex,OriginalFaceID\n";
+  //   for (size_t p = 0; p < h_bvhAPrimIDs.size(); ++p) {
+  //     primFile << p << "," << h_bvhAPrimIDs[p] << "\n";
+  //   }
+  //   primFile.close();
+
+  //   // 3. Download Mesh B Flat Primitives & Offsets (d_outPrimsFlatB, d_outOffsetsB)
+  //   std::vector<uint32_t> h_outPrimsFlatB(d_outPrimsFlatB.size());
+  //   std::vector<uint32_t> h_outOffsetsB(d_outOffsetsB.size());
+  //   if (!d_outPrimsFlatB.empty()) {
+  //     CUBQL_CUDA_CALL(MemcpyAsync(h_outPrimsFlatB.data(), thrust::raw_pointer_cast(d_outPrimsFlatB.data()), 
+  //                                 d_outPrimsFlatB.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream));
+  //     CUBQL_CUDA_CALL(MemcpyAsync(h_outOffsetsB.data(), thrust::raw_pointer_cast(d_outOffsetsB.data()), 
+  //                                 d_outOffsetsB.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream));
+  //     CUBQL_CUDA_CALL(StreamSynchronize(stream));
+  //   }
+
+  //   std::ofstream flatBFile(debugDir + "debug_flat_prims_B.csv");
+  //   flatBFile << "FlatIndex,FaceID\n";
+  //   for (size_t f = 0; f < h_outPrimsFlatB.size(); ++f) {
+  //     flatBFile << f << "," << h_outPrimsFlatB[f] << "\n";
+  //   }
+  //   flatBFile.close();
+
+  //   std::ofstream offsetBFile(debugDir + "debug_offsets_B.csv");
+  //   offsetBFile << "MarkedNodeIdxB,FlatPrimsOffset\n";
+  //   for (size_t o = 0; o < h_outOffsetsB.size(); ++o) {
+  //     offsetBFile << o << "," << h_outOffsetsB[o] << "\n";
+  //   }
+  //   offsetBFile.close();
+
+  //   std::cout << "[Debug Hook] Successfully exported pre-traversal configuration and batch structures to " << debugDir << "!\n";
+  // }
 
   // ============================================================================
   // 8. BATCHED SINGLE-TREE TRAVERSAL & EXACT GPU PREDICATES
