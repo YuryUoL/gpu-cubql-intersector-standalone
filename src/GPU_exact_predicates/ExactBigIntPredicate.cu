@@ -161,10 +161,13 @@ __device__ inline void exact_decompose_V2(double x, __int128_t& mant_out, int& e
 }
 
 // --------------------------------------------------------------------
-// INTERVAL-TO-DOUBLE3 MEMORY HELPER (Exact if lo == hi, else Midpoint)
+// OVERLOADED VERTEX ADAPTERS (Supports double3 and vec3IntervalDouble)
 // --------------------------------------------------------------------
-__device__ inline double3 load_interval_as_double3_V2(const vec3IntervalDouble* ptr) {
-    vec3IntervalDouble v = *ptr;
+__device__ inline double3 to_double3(const double3& p) {
+    return p;
+}
+
+__device__ inline double3 to_double3(const vec3IntervalDouble& v) {
     return make_double3(
         (v.x.lo == v.x.hi) ? v.x.lo : (v.x.lo + v.x.hi) * 0.5,
         (v.y.lo == v.y.hi) ? v.y.lo : (v.y.lo + v.y.hi) * 0.5,
@@ -210,9 +213,7 @@ __device__ inline int orient3d_exact_V2(
 
 // --------------------------------------------------------------------
 // FULL 2D SAT COPLANAR INTERSECTION & EDGE-TRIANGLE PREDICATES
-// (Keep all coplanar and edgeTri helper functions identical to original V2 implementation)
 // --------------------------------------------------------------------
-
 __device__ inline bool all_outside_edge_V2(
     const __int128_t Eu[3], const __int128_t Ev[3],
     const __int128_t Ou[3], const __int128_t Ov[3],
@@ -488,14 +489,15 @@ __device__ inline PairStatus classifyPairBigIntV2(
 }
 
 // --------------------------------------------------------------------
-// KERNEL IMPLEMENTATION
+// TEMPLATED KERNEL & HOST WRAPPER
 // --------------------------------------------------------------------
+template <class VA, class VB>
 __global__ void evaluateGeometricPairsKernelBigInt_KernelV2(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const vec3IntervalDouble* dVertsA,
+    const VA* dVertsA,
     const uint3* dIndicesA,
-    const vec3IntervalDouble* dVertsB,
+    const VB* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs)
 {
@@ -506,27 +508,25 @@ __global__ void evaluateGeometricPairsKernelBigInt_KernelV2(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    double3 Aa = load_interval_as_double3_V2(&dVertsA[idxA.x]);
-    double3 Ab = load_interval_as_double3_V2(&dVertsA[idxA.y]);
-    double3 Ac = load_interval_as_double3_V2(&dVertsA[idxA.z]);
+    double3 Aa = to_double3(dVertsA[idxA.x]);
+    double3 Ab = to_double3(dVertsA[idxA.y]);
+    double3 Ac = to_double3(dVertsA[idxA.z]);
 
-    double3 Ba = load_interval_as_double3_V2(&dVertsB[idxB.x]);
-    double3 Bb = load_interval_as_double3_V2(&dVertsB[idxB.y]);
-    double3 Bc = load_interval_as_double3_V2(&dVertsB[idxB.z]);
+    double3 Ba = to_double3(dVertsB[idxB.x]);
+    double3 Bb = to_double3(dVertsB[idxB.y]);
+    double3 Bc = to_double3(dVertsB[idxB.z]);
 
     PairStatus status = classifyPairBigIntV2(Aa, Ab, Ac, Ba, Bb, Bc);
     dPairStatuses[tid] = (int)status;
 }
 
-// --------------------------------------------------------------------
-// HOST LAUNCHER (C LINKAGE)
-// --------------------------------------------------------------------
-extern "C" void evaluateGeometricPairsKernelBigIntV2(
+template <class VA, class VB>
+void evaluateGeometricPairsKernelBigIntV2(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const vec3IntervalDouble* dVertsA,
+    const VA* dVertsA,
     const uint3* dIndicesA,
-    const vec3IntervalDouble* dVertsB,
+    const VB* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream)
@@ -536,7 +536,7 @@ extern "C" void evaluateGeometricPairsKernelBigIntV2(
     int blockSize = 256;
     int gridSize = (numYellowPairs + blockSize - 1) / blockSize;
 
-    evaluateGeometricPairsKernelBigInt_KernelV2<<<gridSize, blockSize, 0, stream>>>(
+    evaluateGeometricPairsKernelBigInt_KernelV2<VA, VB><<<gridSize, blockSize, 0, stream>>>(
         dYellowCandidatePairs,
         dPairStatuses,
         dVertsA,
@@ -546,3 +546,13 @@ extern "C" void evaluateGeometricPairsKernelBigIntV2(
         numYellowPairs
     );
 }
+
+// Explicit instantiations for all 4 mesh vertex type combinations
+#define INSTANTIATE_BIGINT_PAIR_EVAL(VA, VB)                                            \
+    template void evaluateGeometricPairsKernelBigIntV2<VA, VB>(                         \
+        const int2*, int*, const VA*, const uint3*, const VB*, const uint3*, int, cudaStream_t);
+
+INSTANTIATE_BIGINT_PAIR_EVAL(vec3IntervalDouble, vec3IntervalDouble)
+INSTANTIATE_BIGINT_PAIR_EVAL(double3,            double3)
+INSTANTIATE_BIGINT_PAIR_EVAL(double3,            vec3IntervalDouble)
+INSTANTIATE_BIGINT_PAIR_EVAL(vec3IntervalDouble, double3)

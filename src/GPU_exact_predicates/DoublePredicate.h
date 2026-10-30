@@ -6,16 +6,16 @@
 #include "PairStatus.h"
 #include "GPUInterval.h"
 
-// Executes a hardware FP64 double-precision interval evaluation on the candidate list
-// accepting interval-valued vertex inputs.
+// Templated pipeline wrapper supporting any mix of double3 and vec3IntervalDouble
+template <class VA, class VB>
 void evaluateAndCompactPairsDoubleFull(
-    const int2* dYellowCandidatePairs,
+    const int2* dCandidatePairs,
     int* dPairStatuses,
-    const vec3IntervalDouble* dVertsA,
+    const VA* dVertsA,
     const uint3* dIndicesA,
-    const vec3IntervalDouble* dVertsB,
+    const VB* dVertsB,
     const uint3* dIndicesB,
-    int numYellowPairs,
+    int totalBatchPairs,
     cudaStream_t stream = 0
 );
 

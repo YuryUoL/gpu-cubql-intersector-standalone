@@ -4,25 +4,19 @@
 #include <cuda_runtime.h>
 #include <vector_types.h>
 #include "PairStatus.h"
-#include "GPUInterval.h" // Include your interval definition
+#include "GPUInterval.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
+// Templated inexact big-int filter pipeline supporting any mix of double3 and vec3IntervalDouble
+template <class VA, class VB>
 void evaluateGeometricPairsKernelBigInt(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const vec3IntervalDouble* dVertsA,
+    const VA* dVertsA,
     const uint3* dIndicesA,
-    const vec3IntervalDouble* dVertsB,
+    const VB* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream = 0
 );
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif // GPU_PREDICATES_CHECK_BIGINTEGER_H

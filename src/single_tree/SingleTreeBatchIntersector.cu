@@ -25,22 +25,7 @@
 #include "CPU/YellowFilter.h"
 #include "CPU/DebugFallbackCollector.h"
 
-// Helper kernel to box raw double3 points into rigorous zero-width point intervals
-__global__ void convertDouble3ToIntervalsKernel(
-    const double3 *inVerts,
-    vec3IntervalDouble *outIntervals,
-    size_t numVerts)
-{
-  int idx = threadIdx.x + blockIdx.x * blockDim.x;
-  if (idx >= numVerts)
-    return;
-  double3 v = inVerts[idx];
-  outIntervals[idx] = vec3IntervalDouble{
-      GPUInterval<double>{v.x, v.x},
-      GPUInterval<double>{v.y, v.y},
-      GPUInterval<double>{v.z, v.z}};
-}
-
+template <class VA, class VB>
 uint64_t executeSingleTreeBatchedTraversalWithPredicates(
     Mesh &meshAcpu, Mesh &meshBcpu,
     int batchMultiplier, int totalBatches,
@@ -55,63 +40,9 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
     const cuBQL::bvh3f &bvhA,
     const cuBQL::box3f *d_boxesA,
     const cuBQL::box3f *d_boxesB,
-    const double3 *d_vertsA,
+    const VA *d_vertsA,
     const uint3 *d_indicesA,
-    const double3 *d_vertsB,
-    const uint3 *d_indicesB,
-    int2 *&outFinalExactPairs, size_t &outFinalCount,
-    IntersectionTimeTracker &tracker,
-    Point3 m_centerA, Point3 m_centerB,
-    double3 m_rotA, double3 m_transA, double3 m_rotB, double3 m_transB,
-    int exactPredicateComputeMode,
-    cudaStream_t stream)
-{
-
-  // For Mode 1 or other interval-backed modes: Convert raw doubles to intervals on the GPU and forward
-  size_t numVertsA = meshAcpu.vertices().size();
-  size_t numVertsB = meshBcpu.vertices().size();
-  vec3IntervalDouble *d_intervalVertsA = nullptr;
-  vec3IntervalDouble *d_intervalVertsB = nullptr;
-
-  CUBQL_CUDA_CALL(MallocAsync(&d_intervalVertsA, numVertsA * sizeof(vec3IntervalDouble), stream));
-  CUBQL_CUDA_CALL(MallocAsync(&d_intervalVertsB, numVertsB * sizeof(vec3IntervalDouble), stream));
-
-  int blockSize = 256;
-  convertDouble3ToIntervalsKernel<<<(numVertsA + blockSize - 1) / blockSize, blockSize, 0, stream>>>(d_vertsA, d_intervalVertsA, numVertsA);
-  convertDouble3ToIntervalsKernel<<<(numVertsB + blockSize - 1) / blockSize, blockSize, 0, stream>>>(d_vertsB, d_intervalVertsB, numVertsB);
-
-  uint64_t result = executeSingleTreeBatchedTraversalWithPredicates(
-      meshAcpu, meshBcpu, batchMultiplier, totalBatches,
-      d_outPairsA, d_outPairsB, d_reverseMapB, d_markedNodeIndicesB,
-      d_outOffsetsB, d_outPrimsFlatB, d_nodeDescendantCountsB, h_outMarkedCountB,
-      bvhA, d_boxesA, d_boxesB,
-      d_intervalVertsA, d_indicesA, d_intervalVertsB, d_indicesB,
-      outFinalExactPairs, outFinalCount, tracker,
-      m_centerA, m_centerB, m_rotA, m_transA, m_rotB, m_transB,
-      exactPredicateComputeMode, stream);
-
-  CUBQL_CUDA_CALL(FreeAsync(d_intervalVertsA, stream));
-  CUBQL_CUDA_CALL(FreeAsync(d_intervalVertsB, stream));
-  return result;
-}
-
-uint64_t executeSingleTreeBatchedTraversalWithPredicates(
-    Mesh &meshAcpu, Mesh &meshBcpu,
-    int batchMultiplier, int totalBatches,
-    const thrust::device_vector<uint32_t> &d_outPairsA,
-    const thrust::device_vector<uint32_t> &d_outPairsB,
-    const thrust::device_vector<uint32_t> &d_reverseMapB,
-    const thrust::device_vector<uint32_t> &d_markedNodeIndicesB,
-    const thrust::device_vector<uint32_t> &d_outOffsetsB,
-    const thrust::device_vector<uint32_t> &d_outPrimsFlatB,
-    const thrust::device_vector<uint32_t> &d_nodeDescendantCountsB,
-    uint32_t h_outMarkedCountB,
-    const cuBQL::bvh3f &bvhA,
-    const cuBQL::box3f *d_boxesA,
-    const cuBQL::box3f *d_boxesB,
-    const vec3IntervalDouble *d_vertsA,
-    const uint3 *d_indicesA,
-    const vec3IntervalDouble *d_vertsB,
+    const VB *d_vertsB,
     const uint3 *d_indicesB,
     int2 *&outFinalExactPairs, size_t &outFinalCount,
     IntersectionTimeTracker &tracker,
@@ -326,30 +257,6 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
 
     CUBQL_CUDA_CALL(EventRecord(evAabbEnd, stream));
 
-    //    if (exactPredicateComputeMode == 5)
-    // {
-    //   CUBQL_CUDA_CALL(EventRecord(evCompact2Start, stream));
-    //   tracker.confirmedOrangePairs += totalChunkPairs;
-    //   std::vector<int2> hChunkOrange(totalChunkPairs);
-    //   CUBQL_CUDA_CALL(MemcpyAsync(hChunkOrange.data(), d_candidatePairs, totalChunkPairs * sizeof(int2), cudaMemcpyDeviceToHost, stream));
-    //   CUBQL_CUDA_CALL(EventRecord(evCompact2End, stream));
-    //   CUBQL_CUDA_CALL(StreamSynchronize(stream));
-
-    //   // Run CPU Exact Fallback directly on all AABB candidates
-    //   double tCpuStart = cuBQL::getCurrentTime();
-    //   size_t confirmedOranges =
-    //       filterYellowPairsTBB(meshAcpu, meshBcpu, hChunkOrange.data(), hChunkOrange.size(), h_finalBuffer + hostCount,
-    //                            m_centerA, m_rotA, m_transA, m_centerB, m_rotB, m_transB);
-    //   tracker.CPUPredicates += (cuBQL::getCurrentTime() - tCpuStart) * 1000.0;
-    //   hostCount += confirmedOranges;
-
-    //   // Cleanup chunk resources and proceed to next batch
-    //   CUBQL_CUDA_CALL(FreeAsync(d_candidatePairs, stream));
-    //   CUBQL_CUDA_CALL(StreamSynchronize(stream));
-    //   continue;
-    // }
-
-
     // ----------------------------------------------------------------
     // DIRECT DOUBLE-PRECISION GPU PREDICATES EVALUATION
     // ----------------------------------------------------------------
@@ -357,8 +264,8 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
     CUBQL_CUDA_CALL(MallocAsync(&d_pairStatuses, totalChunkPairs * sizeof(int), stream));
 
     CUBQL_CUDA_CALL(EventRecord(evEvalStart, stream));
-    evaluateAndCompactPairsDoubleAssisted(d_candidatePairs, d_pairStatuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
-                                          totalChunkPairs, stream);
+    evaluateAndCompactPairsDoubleAssisted<VA, VB>(d_candidatePairs, d_pairStatuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
+                                                  totalChunkPairs, stream);
     CUBQL_CUDA_CALL(EventRecord(evEvalEnd, stream));
 
     // ----------------------------------------------------------------
@@ -418,26 +325,24 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
         CUBQL_CUDA_CALL(EventRecord(evDoubleStart, stream));
         if (exactPredicateComputeMode == 1)
         {
-          evaluateAndCompactPairsDouble(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
-                                        totalYellow, stream);
+          evaluateAndCompactPairsDoubleFull<VA, VB>(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
+                                                    totalYellow, stream);
         }
-
         else if (exactPredicateComputeMode == 2)
         {
-          evaluateAndCompactPairsDoubleFull(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
-                                            totalYellow, stream);
+          evaluateAndCompactPairsDoubleFull<VA, VB>(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
+                                                    totalYellow, stream);
         }
-
-          else if (exactPredicateComputeMode == 3)
+        else if (exactPredicateComputeMode == 3)
         {
-          evaluateGeometricPairsKernelBigInt(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
-                                             totalYellow, stream);
+          evaluateGeometricPairsKernelBigInt<VA, VB>(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
+                                                     totalYellow, stream);
         }
-       else 
+        else 
         {
-         evaluateGeometricPairsKernelBigIntV2(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
-                                               totalYellow, stream);
-       }
+          evaluateGeometricPairsKernelBigIntV2<VA, VB>(d_yellow_raw, d_double_statuses, d_vertsA, d_indicesA, d_vertsB, d_indicesB,
+                                                       totalYellow, stream);
+        }
 
         CUBQL_CUDA_CALL(EventRecord(evDoubleEnd, stream));
 
@@ -480,7 +385,6 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
       }
       else
       {
-        // Track Yellow candidate D2H copy time when exact GPU mode is bypassed (mode == 0)
         CUBQL_CUDA_CALL(EventRecord(evCompact2Start, stream));
         tracker.confirmedOrangePairs += totalYellow;
         hChunkOrange.resize(totalYellow);
@@ -490,7 +394,7 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
       }
     }
 
-    CUBQL_CUDA_CALL(StreamSynchronize(stream)); // Single stream sync for chunk completion
+    CUBQL_CUDA_CALL(StreamSynchronize(stream));
 
     // ----------------------------------------------------------------
     // METRICS RECORDING VIA CUDA EVENTS
@@ -521,7 +425,6 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
     // ----------------------------------------------------------------
     if (!hChunkOrange.empty())
     {
-     // DebugFallbackCollector::addPairs(hChunkOrange.data(), hChunkOrange.size());
       double tCpuStart = cuBQL::getCurrentTime();
       size_t confirmedOranges =
           filterYellowPairsTBB(meshAcpu, meshBcpu, hChunkOrange.data(), hChunkOrange.size(), h_finalBuffer + hostCount,
@@ -594,3 +497,21 @@ uint64_t executeSingleTreeBatchedTraversalWithPredicates(
   std::cout << "--------------------------------------------------\n\n";
   return finalCandidatePairs;
 }
+
+// Explicit template instantiations for all combinations of double3 and vec3IntervalDouble
+#define INSTANTIATE_TRAVERSAL(VA, VB)                                                           \
+    template uint64_t executeSingleTreeBatchedTraversalWithPredicates<VA, VB>(                  \
+        Mesh &, Mesh &, int, int,                                                               \
+        const thrust::device_vector<uint32_t>&, const thrust::device_vector<uint32_t>&,         \
+        const thrust::device_vector<uint32_t>&, const thrust::device_vector<uint32_t>&,         \
+        const thrust::device_vector<uint32_t>&, const thrust::device_vector<uint32_t>&,         \
+        const thrust::device_vector<uint32_t>&, uint32_t,                                       \
+        const cuBQL::bvh3f&, const cuBQL::box3f*, const cuBQL::box3f*,                          \
+        const VA*, const uint3*, const VB*, const uint3*,                                       \
+        int2*&, size_t&, IntersectionTimeTracker&,                                              \
+        Point3, Point3, double3, double3, double3, double3, int, cudaStream_t);
+
+INSTANTIATE_TRAVERSAL(vec3IntervalDouble, vec3IntervalDouble)
+INSTANTIATE_TRAVERSAL(double3,            double3)
+INSTANTIATE_TRAVERSAL(double3,            vec3IntervalDouble)
+INSTANTIATE_TRAVERSAL(vec3IntervalDouble, double3)

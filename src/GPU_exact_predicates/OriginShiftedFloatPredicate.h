@@ -6,12 +6,15 @@
 #include "PairStatus.h"
 #include "GPUInterval.h"
 
+// VA / VB are each either double3 (exact points) or vec3IntervalDouble (boxes);
+// mesh A and mesh B may use different types. Instantiated in the .cu for all 4 combinations.
+template <class VA, class VB>
 void evaluateAndCompactPairsDoubleAssisted(
     const int2* dCandidatePairs,
     int* dPairStatuses,
-    const vec3IntervalDouble* dVertsA,
+    const VA* dVertsA,
     const uint3* dIndicesA,
-    const vec3IntervalDouble* dVertsB,
+    const VB* dVertsB,
     const uint3* dIndicesB,
     int totalBatchPairs,
     cudaStream_t stream = 0

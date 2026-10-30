@@ -129,6 +129,7 @@ set(MAIN_APP_SOURCES
     src/GPU_exact_predicates/ExactBigIntPredicate.cu
     src/GPU_exact_predicates/OriginShiftedFloatPredicate.cu
     src/GPU_exact_predicates/DoublePredicate.cu
+    src/GPU_exact_predicates/OriginShiftedFloatPredicateCore.cuh
 )
 
 if(ENABLE_EXPERIMENTAL_CGAL_PARALLEL)

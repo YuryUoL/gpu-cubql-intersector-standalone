@@ -5,14 +5,13 @@
 #include <cmath>
 
 // --------------------------------------------------------------------
-// MEMORY HELPER 
+// OVERLOADED VERTEX ADAPTERS (Supports double3 and vec3IntervalDouble)
 // --------------------------------------------------------------------
-__device__ inline double3 load_double3(const double3* ptr) {
-    return make_double3(__ldg(&(ptr->x)), __ldg(&(ptr->y)), __ldg(&(ptr->z)));
+__device__ inline double3 to_double3(const double3& p) {
+    return p;
 }
 
-__device__ inline double3 load_interval_as_double3(const vec3IntervalDouble* ptr) {
-    vec3IntervalDouble v = *ptr; // Standard dereference
+__device__ inline double3 to_double3(const vec3IntervalDouble& v) {
     return make_double3(
         (v.x.lo == v.x.hi) ? v.x.lo : (v.x.lo + v.x.hi) * 0.5,
         (v.y.lo == v.y.hi) ? v.y.lo : (v.y.lo + v.y.hi) * 0.5,
@@ -371,14 +370,15 @@ __device__ inline PairStatus classifyPairBigInt(
 }
 
 // --------------------------------------------------------------------
-// KERNEL IMPLEMENTATION
+// TEMPLATED KERNEL & HOST WRAPPER
 // --------------------------------------------------------------------
+template <class VA, class VB>
 __global__ void evaluateGeometricPairsKernelBigInt_Kernel(
     const int2* dYellowCandidatePairs, 
     int* dPairStatuses, 
-    const vec3IntervalDouble* dVertsA,
+    const VA* dVertsA,
     const uint3* dIndicesA,
-    const vec3IntervalDouble* dVertsB,
+    const VB* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs) 
 {
@@ -389,28 +389,25 @@ __global__ void evaluateGeometricPairsKernelBigInt_Kernel(
     uint3 idxA = dIndicesA[pair.x];
     uint3 idxB = dIndicesB[pair.y];
 
-    // Load intervals and convert to average double3 points on-the-fly
-    double3 Aa = load_interval_as_double3(&dVertsA[idxA.x]);
-    double3 Ab = load_interval_as_double3(&dVertsA[idxA.y]);
-    double3 Ac = load_interval_as_double3(&dVertsA[idxA.z]);
+    double3 Aa = to_double3(dVertsA[idxA.x]);
+    double3 Ab = to_double3(dVertsA[idxA.y]);
+    double3 Ac = to_double3(dVertsA[idxA.z]);
 
-    double3 Ba = load_interval_as_double3(&dVertsB[idxB.x]);
-    double3 Bb = load_interval_as_double3(&dVertsB[idxB.y]);
-    double3 Bc = load_interval_as_double3(&dVertsB[idxB.z]);
+    double3 Ba = to_double3(dVertsB[idxB.x]);
+    double3 Bb = to_double3(dVertsB[idxB.y]);
+    double3 Bc = to_double3(dVertsB[idxB.z]);
 
     PairStatus status = classifyPairBigInt(Aa, Ab, Ac, Ba, Bb, Bc);
     dPairStatuses[tid] = (int)status; 
 }
 
-// --------------------------------------------------------------------
-// HOST LAUNCHER (C LINKAGE)
-// --------------------------------------------------------------------
-extern "C" void evaluateGeometricPairsKernelBigInt(
+template <class VA, class VB>
+void evaluateGeometricPairsKernelBigInt(
     const int2* dYellowCandidatePairs,
     int* dPairStatuses,
-    const vec3IntervalDouble* dVertsA,
+    const VA* dVertsA,
     const uint3* dIndicesA,
-    const vec3IntervalDouble* dVertsB,
+    const VB* dVertsB,
     const uint3* dIndicesB,
     int numYellowPairs,
     cudaStream_t stream) 
@@ -420,7 +417,7 @@ extern "C" void evaluateGeometricPairsKernelBigInt(
     int blockSize = 256;
     int gridSize = (numYellowPairs + blockSize - 1) / blockSize;
 
-    evaluateGeometricPairsKernelBigInt_Kernel<<<gridSize, blockSize, 0, stream>>>(
+    evaluateGeometricPairsKernelBigInt_Kernel<VA, VB><<<gridSize, blockSize, 0, stream>>>(
         dYellowCandidatePairs, 
         dPairStatuses, 
         dVertsA, 
@@ -430,3 +427,13 @@ extern "C" void evaluateGeometricPairsKernelBigInt(
         numYellowPairs
     );
 }
+
+// Explicit instantiations for all 4 mesh vertex type combinations
+#define INSTANTIATE_INEXACT_BIGINT_PAIR_EVAL(VA, VB)                            \
+    template void evaluateGeometricPairsKernelBigInt<VA, VB>(                   \
+        const int2*, int*, const VA*, const uint3*, const VB*, const uint3*, int, cudaStream_t);
+
+INSTANTIATE_INEXACT_BIGINT_PAIR_EVAL(vec3IntervalDouble, vec3IntervalDouble)
+INSTANTIATE_INEXACT_BIGINT_PAIR_EVAL(double3,            double3)
+INSTANTIATE_INEXACT_BIGINT_PAIR_EVAL(double3,            vec3IntervalDouble)
+INSTANTIATE_INEXACT_BIGINT_PAIR_EVAL(vec3IntervalDouble, double3)
